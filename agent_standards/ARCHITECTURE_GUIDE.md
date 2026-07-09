@@ -69,8 +69,8 @@ main() → app_main() → while(1) { sw_timer_task(); }
 #define BUZZER_HTIM (&htim12)
 #define BUZZER_CH   (TIM_CHANNEL_2)
 
-/* drv_log_uart.c */
-#define LOG_HUART (&huart1)   /* 全文只用 LOG_HUART / LOG_HUART->gState，杜绝散落的 &huart1 */
+/* drv_uart.c */
+#define UART1_HUART (&huart1)   /* 全文只用 LOG_HUART / LOG_HUART->gState，杜绝散落的 &huart1 */
 ```
 
 **(b) 多实例 → 内部句柄/配置表 `s_xxx[]`，`init(void)` 遍历初始化全部：**
@@ -96,7 +96,7 @@ void drv_xxx_init(void)          /* 无参：遍历表启动全部外设 */
 > **逐通道操作仍带 `ch`/`id`/`inst` 参数**（`drv_xxx_set_duty(id, …)`、`drv_can_send(ch, …)`、`drv_adc_read_raw(ch)`），但 **`init` 一律无参**。
 > 无 init 的驱动例外：`drv_revision` 直接读 `main.h` 宏，无需初始化。
 
-**全体驱动均为此形态**：`drv_adc`、`drv_fan`、`drv_can`、`drv_power`、`drv_status`、`drv_led`、`drv_buzzer`、`drv_rgb`、`drv_log_uart`、`drv_hw_timer` 都是 `drv_xxx_init(void)`。
+**全体驱动均为此形态**：`drv_adc`、`drv_fan`、`drv_can`、`drv_power`、`drv_status`、`drv_led`、`drv_buzzer`、`drv_rgb`、`drv_uart`、`drv_hw_timer` 都是 `drv_xxx_init(void)`。
 
 ### 3.2 逻辑通道枚举 + 路由表
 

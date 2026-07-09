@@ -9,13 +9,13 @@
  * @brief   日志输出任务实现（sw_timer 驱动，无需外部 poll）
  *
  * TX：sw_timer 定期检查 log 模块 kfifo，有数据则通过 UART DMA 发送。
- * RX：由 IDLE 中断驱动 drv_log_uart_sync_rx_dma 自动将数据推入 kfifo。
+ * RX：由 IDLE 中断驱动 drv_uart 自动将数据推入 kfifo。
  */
 
 #include "log_task.h"
 
-#include "drv_log_uart.h"
 #include "drv_systick.h"
+#include "drv_uart.h"
 #include "log.h"
 #include "sw_timer.h"
 
@@ -43,7 +43,7 @@ void log_task_init(void)
     };
     log_init(&log_cfg);
 
-    drv_log_uart_init();
+    drv_uart_init();
 
     /* 启动 sw_timer 驱动 TX 发送 */
     const sw_timer_config_t timer_cfg = {
@@ -65,7 +65,7 @@ static void log_timer_cb(void* user_data)
     (void)user_data;
 
     /* ── TX ── */
-    if (!drv_log_uart_is_tx_busy()) {
+    if (!drv_uart_is_tx_busy(DRV_UART_CH_1)) {
         uint32_t log_len = log_tx_len();
         if (log_len > 0) {
             if (log_len > sizeof(s_tx_buf)) {
@@ -73,7 +73,7 @@ static void log_timer_cb(void* user_data)
             }
             uint32_t actual = log_tx_get(s_tx_buf, log_len);
             if (actual > 0) {
-                drv_log_uart_send(s_tx_buf, actual);
+                drv_uart_send(DRV_UART_CH_1, s_tx_buf, actual);
             }
         }
     }
@@ -81,7 +81,7 @@ static void log_timer_cb(void* user_data)
     /* ── RX ── */
     {
         uint8_t rx_buf[128];
-        uint32_t rx_len = drv_log_uart_rx_read(rx_buf, sizeof(rx_buf));
+        uint32_t rx_len = drv_uart_rx_read(DRV_UART_CH_1, rx_buf, sizeof(rx_buf));
         if (rx_len > 0) {
             log_hexdump("UART0", rx_buf, rx_len);
         }

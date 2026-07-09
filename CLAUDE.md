@@ -103,7 +103,7 @@ Core/                   CubeMX 生成代码（Inc + Src）
   Src/stm32g4xx_it.c    中断入口
 device_drivers/         设备驱动层（drv_ 前缀）
   drv_can.c/h           CAN (FDCAN1, PA11/PA12)
-  drv_log_uart.c/h      日志 UART (USART1)
+  drv_uart.c/h          UART (USART1/2/3 — PC4/PC5, PA2/PA3, PB10/PB11, DMA + IDLE 中断)
   drv_systick.c/h       SysTick 延时/时间戳 (delay_us/millis/micros)
   drv_hw_timer.c/h      硬件定时器
 m_middlewares/          通用中间件（平台无关）
