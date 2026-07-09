@@ -107,4 +107,14 @@ extern uint32_t verify_CRC16_check_sum(uint8_t *pchMessage, uint32_t dwLength);
   * @retval         none
   */
 extern void append_CRC16_check_sum(uint8_t * pchMessage,uint32_t dwLength);
+
+/**
+  * @brief          CRC16_CCITT_FALSE 计算
+  * @param[in]      pchMessage: 数据
+  * @param[in]      dwLength: 数据长度
+  * @retval         计算完的 CRC16
+  * @note           多项式 0x1021，初始值 0xFFFF，无 XOR-out，无反射。
+  *                 与现有 get_CRC16_check_sum 多项式不同，不能混用。
+  */
+uint16_t get_CRC16_CCITT_FALSE(uint8_t *pchMessage, uint32_t dwLength);
 #endif

@@ -221,3 +221,27 @@ void append_CRC16_check_sum(uint8_t *pchMessage, uint32_t dwLength)
     pchMessage[dwLength - 2] = (uint8_t) (wCRC & 0x00ff);
     pchMessage[dwLength - 1] = (uint8_t) ((wCRC >> 8) & 0x00ff);
 }
+
+/**
+  * @brief          CRC16_CCITT_FALSE 计算 (多项式 0x1021, 初始值 0xFFFF)
+  * @param[in]      pchMessage: 数据
+  * @param[in]      dwLength: 数据长度
+  * @retval         计算完的 CRC16
+  */
+uint16_t get_CRC16_CCITT_FALSE(uint8_t *pchMessage, uint32_t dwLength)
+{
+    const uint16_t polynomial = 0x1021;
+    uint16_t crc = 0xFFFF;
+
+    for (uint32_t i = 0; i < dwLength; i++) {
+        crc ^= (uint16_t)(pchMessage[i] << 8);
+        for (uint32_t j = 0; j < 8; j++) {
+            if (crc & 0x8000) {
+                crc = (uint16_t)((crc << 1) ^ polynomial);
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}

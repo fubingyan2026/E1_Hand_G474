@@ -121,11 +121,13 @@ m_middlewares/          通用中间件（平台无关）
   public.h              统一导出所有 middleware 头文件
 service/                业务逻辑层（srv_ 前缀）
   srv_led.c/h           LED 控制（ON/OFF/闪烁/呼吸灯 FSM, clist 多实例管理）
+  srv_motor.c/h         电机串口通信服务（广播控制 + 分时轮询反馈）
 tasks/                  应用编排层
   app_main.c/h          主入口：init 顺序 → for(;;) { sw_timer_tick(); sw_timer_task(); }
   can_task.c/h          CAN 通信任务（10ms 周期）
   led_task.c/h          LED 状态指示任务（蓝色+红色双 LED, 10ms 刷新）
   log_task.c/h          日志输出任务（5ms 周期, UART DMA TX + RX）
+  motor_task.c/h        电机控制任务（3ms 周期, USART2+3 广播控制 + 反馈轮询）
 ```
 
 ## 核心中间件速查表

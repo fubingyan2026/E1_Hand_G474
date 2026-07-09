@@ -43,7 +43,7 @@ void log_task_init(void)
     };
     log_init(&log_cfg);
 
-    drv_uart_init();
+    /* 注：drv_uart_init() 由 app_main 统一调用，此处不再单独调用 */
 
     /* 启动 sw_timer 驱动 TX 发送 */
     const sw_timer_config_t timer_cfg = {
