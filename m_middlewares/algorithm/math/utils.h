@@ -85,6 +85,7 @@ http://resnet.uoregon.edu/~gurney_j/jmpc/bitwise.html
             >> 16 * ((v) / 2L >> 31 > 0)))
 #define LOG2(v) LOG2_64BIT(v)
 
+#ifndef container_of
 #if 0
 // ISO C version, but no type checking
 #define container_of(ptr, type, member) \
@@ -108,7 +109,7 @@ static inline void memcpy_fn(void* destination, const void* source, size_t num) 
 #else
 void* memcpy_fn(void* destination, const void* source, size_t num) asm("memcpy");
 #endif
-
+#endif
 #endif
 
 #if __GNUC__ > 6

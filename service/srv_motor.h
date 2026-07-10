@@ -168,6 +168,7 @@ struct srv_motor_handle {
 
     /* 轮询状态（内部使用） */
     bool query_pending; /**< 正在等待回复 */
+    bool poll_retry; /**< 上次查询未回复，再试一次 */
     uint8_t query_index; /**< 当前查询的 index */
     bool cur_pending; /**< 电流限制待发送 */
     bool initialized; /**< 初始化标志 */
@@ -225,6 +226,9 @@ void srv_motor_enable(srv_motor_handle_t* inst, bool en);
  * @param cur_ref Q15 电流限制 (0~32767 → 0~5.625A)
  */
 void srv_motor_set_current(srv_motor_handle_t* inst, int16_t cur_ref);
+
+/** @brief 按全局索引获取电机句柄 (0-8, 0-4=USART2, 5-8=USART3) */
+srv_motor_handle_t* srv_motor_get_handle(uint32_t index);
 
 /* --- 反馈接口 --- */
 

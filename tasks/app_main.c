@@ -17,7 +17,7 @@
 #include "drv_uart.h"
 #include "led_task.h"
 #include "log_task.h"
-#include "m_behavior_task.h"
+#include "behavior_task.h"
 #include "motor_task.h"
 #include "sw_timer.h"
 
@@ -42,7 +42,7 @@ int app_main(void)
     motor_task_init();
 
     /* 电机行为控制（10ms FSM + 故障监控） */
-    m_behavior_task_init();
+    behavior_task_init();
 
     /* 主循环：sw_timer 驱动日志/LED/CAN/FB，motor 全速 poll */
     for (;;) {

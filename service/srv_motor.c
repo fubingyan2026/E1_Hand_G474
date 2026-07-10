@@ -79,6 +79,15 @@ typedef struct {
 /** @brief 两组电机实例（索引 0=USART2, 1=USART3） */
 static srv_motor_group_t s_grp[2];
 
+/** @brief 电机句柄静态存储 + 扁平索引表 */
+static srv_motor_handle_t s_handle[SRV_MOTOR_TOTAL];
+
+/** @brief 初始化配置表 */
+static const struct { uint8_t dev_id; uint8_t uart; } s_cfg[SRV_MOTOR_TOTAL] = {
+    {1,2}, {2,2}, {3,2}, {4,2}, {5,2},
+    {1,3}, {2,3}, {3,3}, {4,3},
+};
+
 /** @brief 模块初始化标志 */
 static bool s_initialized;
 
@@ -153,6 +162,10 @@ srv_motor_error_t srv_motor_init(void)
         g->uart_idx = (uint8_t)(i + 2); /* 2=USART2, 3=USART3 */
         fsm_init(&g->fsm, MOTOR_ST_IDLE, &fsm_cfg);
     }
+
+    /* 根据配置表注册全部电机 */
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++)
+        srv_motor_register(&s_handle[i], s_cfg[i].dev_id, s_cfg[i].uart);
 
     s_initialized = true;
     return SRV_MOTOR_OK;
@@ -229,6 +242,11 @@ void srv_motor_set_current(srv_motor_handle_t* inst, int16_t cur_ref)
     if (inst->cur_ref == cur_ref) return;  /* 未变化，跳过 */
     inst->cur_ref = cur_ref;
     inst->cur_pending = true;
+}
+
+srv_motor_handle_t* srv_motor_get_handle(uint32_t index)
+{
+    return (index < SRV_MOTOR_TOTAL) ? &s_handle[index] : NULL;
 }
 
 /* --- 反馈接口 --- */
@@ -535,11 +553,16 @@ static void motor_poll_one(srv_motor_group_t* g, drv_uart_channel_t ch)
 
     srv_motor_handle_t* tgt = g->motors[g->poll_cursor];
 
-    /* 上轮查询未收到回复则标记超时，跳过本轮 */
+    /* 上次查询未回复：再试一次，仍无回复则跳过 */
     if (tgt->query_pending) {
-        tgt->query_pending = false;
-        g->poll_cursor = (g->poll_cursor + 1) % MOTOR_PER_GROUP;
-        return;
+        if (!tgt->poll_retry) {
+            tgt->poll_retry = true;  /* 再试一次 */
+        } else {
+            tgt->query_pending = false;
+            tgt->poll_retry = false;
+            g->poll_cursor = (g->poll_cursor + 1) % MOTOR_PER_GROUP;
+            return;
+        }
     }
 
     /* 选择查询索引：每 POLL_01_INTERVAL 次插一次 INFO_01_R */
@@ -602,6 +625,7 @@ static void motor_parse_reply(const uint8_t frame[SRV_MOTOR_FRAME_SIZE],
         return;
 
     inst->query_pending = false;
+    inst->poll_retry = false;
 
     if (cfg_index == SRV_MOTOR_INDEX_INFO_02_R) {
         inst->fb.d_cur = LE16(frame, 8);
