@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**E1_Hand_G474** — 基于 STM32G474 的灵巧手嵌入式固件，裸机（无 RTOS），C11，CMake 构建。
+**E1_Hand_G474** — 基于 STM32G474 (Cortex-M4, 128KB SRAM) 的 9 自由度灵巧手嵌入式固件，裸机（无 RTOS），C11，CMake 构建。
+
+**关键设计决策**：
+- CAN FD 接收上位机控制指令 → 转换 2 路 UART (230400 bps) 广播控制 9 个关节电机 (5+4 分组)
+- 控制频率目标 300 Hz，反馈分高频（角度/速度/Q电流，100Hz）和低频（状态/故障/温度，2Hz）
+- 全程静态分配，无 malloc
 
 ## 代码生成黄金规则
 
@@ -20,8 +25,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **输入**：按键扫描（`key_base`）
 
 > `m_middlewares/public.h` 一行 `#include` 即可引入所有中间件。
-
-具体每个模块的能力见下方「核心中间件速查表」。
 
 ### Build & Development
 
@@ -65,6 +68,7 @@ ninja -C build/Release
 - STM32G474 (Cortex-M4, FPv4-SP)
 - 编译宏：`STM32G474xx`, `USE_HAL_DRIVER`
 - 启动文件：`startup_stm32g474xx.s`
+- Flash: 512 KB, SRAM: 128 KB
 
 ## 架构：五层分层结构
 
@@ -92,6 +96,7 @@ Core/ (CubeMX)   HAL 生成层    main.h / hfdcan1 / htimX / …    ← 只在 U
 - **device_drivers 是唯一允许引用 `main.h` 引脚宏和 CubeMX 句柄的层**
 - **全程静态分配**（无 malloc），调用者提供句柄内存
 - **`init` 一律无参**（driver 层内部包含 HAL 句柄表或宏）
+- **注意**：`agent_standards/ARCHITECTURE_GUIDE.md` 原为旧项目编写，仍引用 STM32F407 和 "E1_Master_Power_Manage" — 分层原则通用，但 HAL 句柄名和外设配置以本文件为准
 
 ## 目录结构
 
@@ -102,10 +107,11 @@ Core/                   CubeMX 生成代码（Inc + Src）
   Src/main.c            MX_xxx_Init() → app_main()
   Src/stm32g4xx_it.c    中断入口
 device_drivers/         设备驱动层（drv_ 前缀）
-  drv_can.c/h           CAN (FDCAN1, PA11/PA12)
+  drv_can.c/h           CAN FD (FDCAN1, PA11/PA12) — 支持经典 CAN + CAN FD
   drv_uart.c/h          UART (USART1/2/3 — PC4/PC5, PA2/PA3, PB10/PB11, DMA + IDLE 中断)
   drv_systick.c/h       SysTick 延时/时间戳 (delay_us/millis/micros)
   drv_hw_timer.c/h      硬件定时器
+  drv_stm32g4_flash.c/h  STM32G4 Flash 操作接口 — EasyFlash 移植层 (64-bit 双字编程)
 m_middlewares/          通用中间件（平台无关）
   framework/            sw_timer, fsm, event, msg_fifo, daemon
   utils/                kfifo（无锁 2的幂 FIFO）, clist（侵入式双向链表）
@@ -118,16 +124,29 @@ m_middlewares/          通用中间件（平台无关）
   log/log.c/h           日志模块（kfifo 缓冲 + 时间戳回调）
   protocol_tools/       协议打包/解析器（protocol_packer, protocol_parser）
   key_base/             按键基础模块
-  public.h              统一导出所有 middleware 头文件
+  Third_Party/          第三方库
+    CmBacktrace/        ARM Cortex 异常栈回溯（HardFault 定位）
+    easyflash/          嵌入式 Flash 参数存储（env/iap/log）
+  public.h              统一导出所有 middleware 头文件（不含 fsm.h，需单独包含）
 service/                业务逻辑层（srv_ 前缀）
   srv_led.c/h           LED 控制（ON/OFF/闪烁/呼吸灯 FSM, clist 多实例管理）
-  srv_motor.c/h         电机串口通信服务（广播控制 + 分时轮询反馈）
+  srv_motor.c/h         电机串口通信服务 — 2 路 USART 广播控制 + 分时轮询 9 电机反馈
+  srv_motor_behavior.c/h 电机行为协调 FSM — 单 fsm 管理 9 电机组生命周期
+                        （INIT→OFFLINE→IDLE→ENABLING→RUNNING⇄FAULT）
+  srv_can.c/h           CAN FD 电机控制协议 — 控制帧解析 + 反馈/状态帧打包
+                        （ID 0x100 控制, 0x101 反馈 100ms, 0x102 状态 500ms）
 tasks/                  应用编排层
-  app_main.c/h          主入口：init 顺序 → for(;;) { sw_timer_tick(); sw_timer_task(); }
-  can_task.c/h          CAN 通信任务（10ms 周期）
+  app_main.c/h          主入口：init 顺序 → for(;;) { sw_timer_tick(); sw_timer_task(); motor_task_poll(); }
+  can_task.c/h          CAN 通信任务（10ms 周期 sw_timer）— 处理 RX + 定时上报反馈/状态
   led_task.c/h          LED 状态指示任务（蓝色+红色双 LED, 10ms 刷新）
   log_task.c/h          日志输出任务（5ms 周期, UART DMA TX + RX）
-  motor_task.c/h        电机控制任务（3ms 周期, USART2+3 广播控制 + 反馈轮询）
+  motor_task.c/h        电机实时控制任务 — 无 sw_timer，motor_task_poll() 在主循环全速轮询
+                        内部由 srv_motor_step 的 FSM 通过 millis() 控制 3ms 广播周期
+  behavior_task.c/h     电机行为管理任务（10ms 周期 sw_timer）— 驱动 srv_motor_behavior_step
+docs/                   协议文档
+  can_protocol.md       CAN FD 灵巧手电机控制协议规范 (V1.1.0)
+  uart_protocol.md      关节模组通讯协议 (V2.0.5, UART 20B 定长帧)
+  plan_task.md          规划文档/设计笔记
 ```
 
 ## 核心中间件速查表
@@ -172,13 +191,55 @@ tasks/                  应用编排层
 | 协议解析 | `"protocol_parser.h"` | 结构化协议解析器 |
 | 按键 | `"key_base.h"` | 按键扫描/消抖/连击识别 |
 
+### 第三方库 (`m_middlewares/Third_Party/`)
+
+| 库 | 用途 | 集成方式 |
+|----|------|----------|
+| CmBacktrace | ARM Cortex HardFault 自动诊断（栈回溯/寄存器/调用栈） | 需实现 `cmb_printf` 输出重定向到 log/UART |
+| EasyFlash | 嵌入式 Flash 参数存储（环境变量 env、IAP、log） | 需实现 `ef_port_xxx` 底层 Flash 接口（`drv_stm32g4_flash.c` 已提供） |
+
 ## 初始化顺序
 
 在 `app_main()` 中按依赖顺序调用：
+
 1. `delay_init()` → SysTick 时基
-2. `log_task_init()` → UART DMA 日志
-3. `can_task_init()` → CAN（须早于 power_task）
-4. `led_task_init()` → LED
+2. `drv_uart_init()` → UART 驱动公共初始化（USART1/2/3），早于 log_task
+3. `log_task_init()` → UART DMA 日志
+4. `can_task_init()` → CAN 通信（注册 RX 回调，启动 10ms 定时器）
+5. `led_task_init()` → LED
+6. `motor_task_init()` → 电机通信（初始化 srv_motor，注册 9 个电机句柄）
+7. `behavior_task_init()` → 电机行为 FSM（依赖 motor_task 已注册句柄）
+
+主循环：
+```c
+for (;;) {
+    sw_timer_tick(millis());    // 更新定时器时基
+    sw_timer_task();            // 派发到期 NORMAL/LOW 定时器
+    motor_task_poll();          // 全速轮询电机控制/反馈（无固定定时器）
+}
+```
+
+> **注意**：`motor_task` 是唯一不使用 sw_timer 的 task —— `srv_motor_step()` 在主循环全速轮询，
+> 内部 FSM 通过 `millis()` 控制 3ms 广播周期，`drv_uart_is_tx_busy()` 控制发送间隔。
+> 这是为满足 300 Hz 控制频率需求的设计决策。
+
+## 通信架构概览
+
+```
+上位机 (CAN FD)
+    │
+    ├─ 0x100 控制帧 (55B) → srv_can_on_rx() → srv_motor_behavior_set_setpoint()
+    │
+    ├─ 0x101 反馈帧 (64B, 100ms)  ← srv_can_send_feedback()
+    └─ 0x102 状态帧 (48B, 500ms)  ← srv_can_send_status()
+
+控制板内部:
+    srv_motor_behavior (FSM) → srv_motor_set_setpoint() → UART 广播帧 (230400 bps)
+                                                              ├─ USART2 (5 电机, ID 1-5)
+                                                              └─ USART3 (4 电机, ID 1-4)
+```
+
+详细协议定义见 [docs/can_protocol.md](docs/can_protocol.md) 和 [docs/uart_protocol.md](docs/uart_protocol.md)。
 
 ## 编码规范
 

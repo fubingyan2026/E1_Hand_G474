@@ -50,13 +50,19 @@ aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/utils MID_utils)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/framework MID_FRAME_WK)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/log MID_LOG)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/key_base KEY_BASE)
-aux_source_directory(${CMAKE_SOURCE_DIR}/Middlewares/protocol_tools MID_PRO)
+aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/protocol_tools MID_PRO)
 
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/algorithm MID_algorithm)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/algorithm/pll MID_pll)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/algorithm/controller MID_controller)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/algorithm/filter MID_filter)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/algorithm/math MID_math)
+
+# Third_Party 模块
+aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/SEGGER_RTT/RTT MID_SEGGER_RTT)
+aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/easyflash/src MID_easyflash)
+aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/CmBacktrace/cm_backtrace MID_CMBT)
+aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/lwmem/src/lwmem MID_lwmem)
 
 aux_source_directory(${CMAKE_SOURCE_DIR}/service SERVICE)
 
@@ -78,6 +84,15 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${MID_filter}
     ${MID_math}
 
+    ${MID_SEGGER_RTT}
+    ${MID_easyflash}
+    ${MID_CMBT}
+    ${MID_lwmem}
+
+    # 汇编文件需要单独添加
+    m_middlewares/Third_Party/CmBacktrace/cm_backtrace/fault_handler/gcc/cmb_fault.S
+    # 单独的源文件
+    m_middlewares/Third_Party/easyflash/port/ef_port.c
 )
 
 # Add include paths
@@ -97,6 +112,11 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     m_middlewares/algorithm/filter
     m_middlewares/algorithm/math
     m_middlewares/framework
+    m_middlewares/Third_Party/CmBacktrace/cm_backtrace
+    m_middlewares/Third_Party/SEGGER_RTT/RTT/config
+    m_middlewares/Third_Party/SEGGER_RTT/RTT
+    m_middlewares/Third_Party/lwmem/include
+    m_middlewares/Third_Party/easyflash/inc
 
 )
 

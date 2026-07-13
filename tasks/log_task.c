@@ -19,15 +19,18 @@
 #include "log.h"
 #include "sw_timer.h"
 
+#include "SEGGER_RTT.h"
+
 /* Private constants ---------------------------------------------------------*/
 
 #define LOG_TASK_TX_BUF_SIZE (256)
-#define LOG_TASK_PERIOD_MS (5U)
+#define LOG_TASK_PERIOD_MS (200U)
 
 /* Private variables ---------------------------------------------------------*/
 
 static uint8_t s_tx_buf[LOG_TASK_TX_BUF_SIZE];
 static sw_timer_t s_log_timer;
+static log_task_output_t s_output_mode = LOG_OUTPUT_RTT;
 
 /* Private function prototypes -----------------------------------------------*/
 
@@ -45,6 +48,9 @@ void log_task_init(void)
 
     /* 注：drv_uart_init() 由 app_main 统一调用，此处不再单独调用 */
 
+    /* SEGGER RTT 初始化（无论当前模式，预初始化以便随时切换） */
+    SEGGER_RTT_Init();
+
     /* 启动 sw_timer 驱动 TX 发送 */
     const sw_timer_config_t timer_cfg = {
         .priority = SW_TIMER_PRIO_NORMAL,
@@ -55,6 +61,11 @@ void log_task_init(void)
     sw_timer_start(&s_log_timer, LOG_TASK_PERIOD_MS, 0);
 }
 
+void log_task_set_output(log_task_output_t mode)
+{
+    s_output_mode = mode;
+}
+
 /* Private functions ---------------------------------------------------------*/
 
 /**
@@ -63,17 +74,34 @@ void log_task_init(void)
 static void log_timer_cb(void* user_data)
 {
     (void)user_data;
+    LOG_T("test", "hello.");
+    LOG_D("test", "hello.");
+    LOG_I("test", "hello.");
+    LOG_W("test", "hello.");
+    LOG_E("test", "hello.");
 
     /* ── TX ── */
-    if (!drv_uart_is_tx_busy(DRV_UART_CH_1)) {
-        uint32_t log_len = log_tx_len();
-        if (log_len > 0) {
-            if (log_len > sizeof(s_tx_buf)) {
-                log_len = sizeof(s_tx_buf);
-            }
-            uint32_t actual = log_tx_get(s_tx_buf, log_len);
-            if (actual > 0) {
-                drv_uart_send(DRV_UART_CH_1, s_tx_buf, actual);
+    uint32_t log_len = log_tx_len();
+    if (log_len > 0) {
+        if (log_len > sizeof(s_tx_buf)) {
+            log_len = sizeof(s_tx_buf);
+        }
+        uint32_t actual = log_tx_get(s_tx_buf, log_len);
+        if (actual > 0) {
+            switch (s_output_mode) {
+            case LOG_OUTPUT_NONE:
+                /* 不输出 */
+                break;
+            case LOG_OUTPUT_RTT:
+                SEGGER_RTT_Write(0, s_tx_buf, actual);
+                break;
+            case LOG_OUTPUT_UART:
+                if (!drv_uart_is_tx_busy(DRV_UART_CH_1)) {
+                    drv_uart_send(DRV_UART_CH_1, s_tx_buf, actual);
+                }
+                break;
+            default:
+                break;
             }
         }
     }
