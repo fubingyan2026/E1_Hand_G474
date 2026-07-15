@@ -5,26 +5,30 @@ Breakpoint=C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/device_drivers/drv
 GraphedExpression="((s_handle[0]).fb).speed_fb", DisplayFormat=DISPLAY_FORMAT_DEC, Color=#e56a6f, Show=0
 GraphedExpression="((s_handle[0]).fb).angle_fb", Color=#35792b, Show=0
 GraphedExpression="((s_mon[0]).ctx).feed_frequency", Color=#769dda
+OpenDocument="main.c", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/Core/Src/main.c", Line=54
+OpenDocument="drv_can.c", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/device_drivers/drv_can.c", Line=141
+OpenDocument="can_task.c", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/tasks/can_task.c", Line=27
+OpenDocument="startup_stm32g474xx.s", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/startup_stm32g474xx.s", Line=47
 OpenDocument="cmb_fault.S", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/m_middlewares/Third_Party/CmBacktrace/cm_backtrace/fault_handler/gcc/cmb_fault.S", Line=0
 OpenDocument="log.h", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/m_middlewares/log/log.h", Line=53
 OpenDocument="daemon_task.c", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/tasks/daemon_task.c", Line=26
-OpenDocument="main.c", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/Core/Src/main.c", Line=54
+OpenDocument="srv_can.c", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/service/srv_can.c", Line=57
 OpenDocument="srv_motor.c", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/service/srv_motor.c", Line=809
 OpenDocument="srv_motor.h", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/service/srv_motor.h", Line=168
 OpenDocument="sw_timer.h", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/m_middlewares/framework/sw_timer.h", Line=35
 OpenDocument="drv_uart.c", FilePath="C:/Users/32457/Desktop/cubemx_project/E1_Hand_G474/device_drivers/drv_uart.c", Line=0
 OpenToolbar="Debug", Floating=0, x=0, y=0
-OpenWindow="Source Files", DockArea=LEFT, x=0, y=0, w=668, h=396, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
-OpenWindow="Disassembly", DockArea=RIGHT, x=0, y=0, w=1096, h=219, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Source Files", DockArea=LEFT, x=0, y=0, w=668, h=406, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Disassembly", DockArea=RIGHT, x=0, y=0, w=1096, h=231, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
 OpenWindow="Memory 1", DockArea=BOTTOM, x=1, y=0, w=1533, h=337, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, EditorAddress=0x0
-OpenWindow="Watched Data 1", DockArea=LEFT, x=0, y=1, w=668, h=962, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
-OpenWindow="Data Sampling", DockArea=RIGHT, x=0, y=1, w=1096, h=294, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, VisibleTab=0, UniformSampleSpacing=0
-OpenWindow="Timeline", DockArea=RIGHT, x=0, y=2, w=1096, h=844, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=1, DataPaneShown=1, PowerPaneShown=0, CodePaneShown=0, PinCursor="Cursor Movable", TimePerDiv="200 ms / Div", TimeStampFormat="Time", DataGraphDrawAsPoints=0, DataGraphLegendShown=1, DataGraphUniformSampleSpacing=0, DataGraphLegendPosition="593;551", DataGraphShowNamesAtCursor=0, PowerGraphDrawAsPoints=0, PowerGraphLegendShown=0, PowerGraphAvgFilterTime=Off, PowerGraphAvgFilterLen=Off, PowerGraphUniformSampleSpacing=0, PowerGraphLegendPosition="633;-91", CodeGraphLegendShown=0, CodeGraphLegendPosition="656;0"
+OpenWindow="Watched Data 1", DockArea=LEFT, x=0, y=1, w=668, h=952, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Data Sampling", DockArea=RIGHT, x=0, y=1, w=1096, h=272, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, VisibleTab=0, UniformSampleSpacing=0
+OpenWindow="Timeline", DockArea=RIGHT, x=0, y=2, w=1096, h=854, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=1, DataPaneShown=1, PowerPaneShown=0, CodePaneShown=0, PinCursor="Cursor Movable", TimePerDiv="200 ms / Div", TimeStampFormat="Time", DataGraphDrawAsPoints=0, DataGraphLegendShown=1, DataGraphUniformSampleSpacing=0, DataGraphLegendPosition="594;562", DataGraphShowNamesAtCursor=0, PowerGraphDrawAsPoints=0, PowerGraphLegendShown=0, PowerGraphAvgFilterTime=Off, PowerGraphAvgFilterLen=Off, PowerGraphUniformSampleSpacing=0, PowerGraphLegendPosition="798;-91", CodeGraphLegendShown=0, CodeGraphLegendPosition="821;0"
 OpenWindow="Console", DockArea=BOTTOM, x=0, y=0, w=1538, h=337, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
 SmartViewPlugin="", Page="", Toolbar="Hidden", Window="SmartView 1"
 TableHeader="Source Files", SortCol="File", SortOrder="ASCENDING", VisibleCols=["File";"Status";"Size";"#Insts";"Path"], ColWidths=[361;116;100;116;1455]
 TableHeader="Data Sampling Table", SortCol="None", SortOrder="ASCENDING", VisibleCols=["Index";"Time";" ((s_handle[0]).fb).speed_fb";" ((s_handle[0]).fb).angle_fb";" ((s_mon[0]).ctx).feed_frequency"], ColWidths=[100;100;100;100;100]
-TableHeader="Data Sampling Setup", SortCol="# Changes", SortOrder="ASCENDING", VisibleCols=["Expression";"Type";"Value";"Min";"Max";"Average";"# Changes";"Min. Change";"Max. Change"], ColWidths=[384;100;144;100;100;144;149;171;171]
+TableHeader="Data Sampling Setup", SortCol="# Changes", SortOrder="ASCENDING", VisibleCols=["Expression";"Type";"Value";"Min";"Max";"Average";"# Changes";"Min. Change";"Max. Change"], ColWidths=[384;100;144;100;144;144;149;171;171]
 TableHeader="Power Sampling", SortCol="None", SortOrder="ASCENDING", VisibleCols=["Index";"Time";"Ch 0"], ColWidths=[100;100;100]
 TableHeader="Watched Data 1", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Size";"Refresh"], ColWidths=[245;138;137;148]
 TableHeader="RegisterSelectionDialog", SortCol="None", SortOrder="ASCENDING", VisibleCols=[], ColWidths=[]

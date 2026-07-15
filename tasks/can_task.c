@@ -12,6 +12,7 @@
 #include "can_task.h"
 
 #include "drv_can.h"
+#include "log.h"
 #include "srv_can.h"
 #include "sw_timer.h"
 
@@ -36,7 +37,11 @@ static void can_rx_callback(drv_can_channel_t ch, const drv_can_msg_t* msg);
 
 void can_task_init(void)
 {
-    drv_can_init();
+    drv_can_error_t err = drv_can_init();
+    if (err != DRV_CAN_OK) {
+        LOG_E("can_task", "drv_can_init failed: %d (FDCAN start error?)", (int)err);
+        return; /* CAN 不可用，不启动周期任务 */
+    }
     srv_can_init();
 
     drv_can_register_rx_callback(DRV_CAN_CH_1, can_rx_callback);
@@ -55,6 +60,7 @@ static void can_timer_cb(void* user_data)
 {
     (void)user_data;
 
+    drv_can_poll_status(DRV_CAN_CH_1); /* Bus-Off 恢复 + 错误状态告警 */
     srv_can_process();
 
     s_fb_tick++;

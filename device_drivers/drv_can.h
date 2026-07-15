@@ -84,6 +84,16 @@ drv_can_error_t drv_can_send(drv_can_channel_t ch, const drv_can_msg_t* msg);
  */
 bool drv_can_tx_ready(drv_can_channel_t ch);
 
+/* --- 状态监控 --- */
+
+/**
+ * @brief 轮询总线协议状态（主循环/任务周期调用，建议 ≥10ms 一次）
+ * @param ch 通道号
+ * @note  Bus-Off 时打印告警并自动触发恢复序列；
+ *        Error-Passive 状态跳变时打印告警（无 ACK / 位错误累积的早期信号）
+ */
+void drv_can_poll_status(drv_can_channel_t ch);
+
 /* --- 接收回调 --- */
 
 /**
