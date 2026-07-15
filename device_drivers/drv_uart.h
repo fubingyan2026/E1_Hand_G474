@@ -8,9 +8,11 @@
  *
  * 多实例驱动：内部句柄表，drv_uart_init() 无需传参。
  * TX：DMA normal，gState + s_tx_busy 双状态检忙。
- * RX：DMA circular + IDLE 中断 → kfifo，无逐字节拷贝。
+ * RX：DMA normal 模式 ping-pong 双缓冲，收满中断内立即切换缓冲重启，
+ *     数据经 drv_uart_register_rx_callback 注册的回调直接上抛（中断上下文）。
  *
- * HAL 回调 (HAL_UART_TxCpltCallback / HAL_UARTEx_RxEventCallback) 集中在此驱动中。
+ * HAL 回调 (HAL_UART_TxCpltCallback / HAL_UART_RxCpltCallback /
+ * HAL_UART_ErrorCallback) 集中在此驱动中。
  */
 
 #ifndef __DRV_UART_H

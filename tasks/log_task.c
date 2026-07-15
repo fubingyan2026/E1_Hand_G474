@@ -30,7 +30,7 @@
 
 static uint8_t s_tx_buf[LOG_TASK_TX_BUF_SIZE];
 static sw_timer_t s_log_timer;
-static log_task_output_t s_output_mode = LOG_OUTPUT_RTT;
+static log_task_output_t s_output_mode = LOG_OUTPUT_NONE;
 
 /* Private function prototypes -----------------------------------------------*/
 

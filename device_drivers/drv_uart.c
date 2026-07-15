@@ -1,14 +1,16 @@
 /**
  * @file    drv_uart.c
  * @author  maximillian
- * @version V2.1.0
- * @date    2026-07-14
- * @brief   通用串口设备驱动实现（USART1/2/3，DMA 输出 + DMA 正常模式接收）
+ * @version V2.2.0
+ * @date    2026-07-15
+ * @brief   通用串口设备驱动实现（USART1/2/3，DMA 输出 + DMA 正常模式 ping-pong 双缓冲接收）
  * @attention
  *
  * 多实例驱动：内部句柄 + DMA 配置表，drv_uart_init() 无需传参。
  * TX：DMA normal，gState + s_tx_busy 双状态检忙。
- * RX：DMA normal 模式，单次接收 rx_dma_buf_size 字节，完成后自动重启。
+ * RX：DMA normal 模式 ping-pong 双缓冲 —— 收满中断内先切换缓冲并立即重启
+ *     DMA（微秒级窗口，抑制 ORE），再解析已收满的旧缓冲；主循环
+ *     drv_uart_rx_restart() 仅作重启失败时的兜底。
  *
  * HAL 回调 (HAL_UART_TxCpltCallback / HAL_UART_RxCpltCallback) 集中在此文件。
  */
@@ -16,6 +18,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "drv_uart.h"
 
+#include "log.h"
 #include "usart.h"
 
 #include <string.h>
@@ -23,7 +26,7 @@
 /* Private constants ---------------------------------------------------------*/
 
 /** @brief RX DMA 单次接收字节数（256 = ~11ms，减少重启频次） */
-#define DRV_UART_RX_BUF_SIZE (256U)
+#define DRV_UART_RX_BUF_SIZE (20U*1)
 
 /** @brief TX 最大单次发送量 */
 #define DRV_UART_TX_BUF_SIZE (256U)
@@ -32,10 +35,11 @@
 
 typedef struct {
     UART_HandleTypeDef* huart;          /**< HAL UART 句柄 */
-    uint8_t             rx_buf[DRV_UART_RX_BUF_SIZE]; /**< RX DMA 接收缓冲 */
+    uint8_t             rx_buf[2][DRV_UART_RX_BUF_SIZE]; /**< RX DMA ping-pong 双缓冲 */
+    volatile uint8_t    rx_buf_idx;     /**< DMA 当前正在填充的缓冲索引 (0/1) */
     uint8_t             tx_buf[DRV_UART_TX_BUF_SIZE]; /**< TX DMA 发送缓冲 */
     bool                tx_busy;        /**< TX DMA 传输中 */
-    bool                rx_need_restart; /**< IDLE 后主循环重启 RX DMA */
+    volatile bool       rx_need_restart; /**< ISR 内重启失败时主循环兜底重启 */
     bool                initialized;    /**< 初始化标志 */
     drv_uart_rx_callback_t rx_callback; /**< 接收回调（中断中执行） */
 } drv_uart_inst_t;
@@ -48,6 +52,32 @@ static drv_uart_inst_t s_inst[DRV_UART_CH_NUM] = {
     [DRV_UART_CH_3] = { .huart = &huart3 },
 };
 
+/* Private functions prototypes ----------------------------------------------*/
+
+/**
+ * @brief 启动 RX DMA 前清除残留错误标志并冲刷 RDR
+ * @note  MX_USARTx_Init 后接收器已使能，启动 DMA 前线上到达的字节会
+ *        滞留 RDR 并置位 ORE；HAL_UART_Receive_DMA 使能 EIE 后残留
+ *        ORE 立刻触发错误中断并中止接收。必须先清再启动。
+ */
+static void drv_uart_rx_flush_errors(UART_HandleTypeDef* huart)
+{
+    __HAL_UART_CLEAR_FLAG(huart,
+        UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+    __HAL_UART_SEND_REQ(huart, UART_RXDATA_FLUSH_REQUEST);
+}
+
+/**
+ * @brief 启动/重启 RX DMA 到当前活动缓冲（ISR 与主循环共用）
+ * @return true=启动成功；false=HAL 句柄忙等，需主循环兜底重试
+ */
+static bool drv_uart_rx_start(drv_uart_inst_t* inst)
+{
+    drv_uart_rx_flush_errors(inst->huart);
+    return HAL_UART_Receive_DMA(inst->huart,
+               inst->rx_buf[inst->rx_buf_idx], DRV_UART_RX_BUF_SIZE) == HAL_OK;
+}
+
 /* Exported functions --------------------------------------------------------*/
 
 /* --- 初始化 / 生命周期 --- */
@@ -59,9 +89,11 @@ drv_uart_error_t drv_uart_init(void)
 
         inst->tx_busy = false;
         inst->initialized = false;
+        inst->rx_buf_idx = 0;
+        inst->rx_need_restart = false;
 
-        /* 启动 DMA normal 模式接收 */
-        if (HAL_UART_Receive_DMA(inst->huart, inst->rx_buf, sizeof(inst->rx_buf)) != HAL_OK) {
+        /* 清残留 ORE/RDR 后启动 DMA normal 模式接收（缓冲 0） */
+        if (!drv_uart_rx_start(inst)) {
             return DRV_UART_ERROR_UNINITIALIZED;
         }
 
@@ -182,39 +214,81 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart)
 }
 
 /**
- * @brief UART RX DMA 完成回调 — 通知上层，标记待重启
+ * @brief UART RX DMA 完成回调 — ping-pong 切换缓冲后立即重启，再解析旧缓冲
+ * @note  先重启后解析：把接收停止窗口从「ISR 解析 256B + 主循环延迟」
+ *        压缩到微秒级，500 kbps 下需 2 字节 (40µs) 才会 ORE，窗口足够安全。
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef* huart)
 {
     for (uint32_t ch = 0; ch < DRV_UART_CH_NUM; ch++) {
         if (s_inst[ch].initialized && s_inst[ch].huart == huart) {
             drv_uart_inst_t* inst = &s_inst[ch];
-            if (inst->rx_callback) {
-                inst->rx_callback((drv_uart_channel_t)ch, inst->rx_buf, sizeof(inst->rx_buf));
+
+            /* 1. 切换到另一块缓冲并立即重启 DMA */
+            uint8_t* done_buf = inst->rx_buf[inst->rx_buf_idx];
+            inst->rx_buf_idx ^= 1U;
+            if (!drv_uart_rx_start(inst)) {
+                inst->rx_need_restart = true; /* 句柄忙（主循环正在启动 TX 等），主循环兜底 */
             }
-            inst->rx_need_restart = true;
+
+            /* 2. 解析已收满的旧缓冲（此期间 DMA 已在填充新缓冲） */
+            if (inst->rx_callback) {
+                inst->rx_callback((drv_uart_channel_t)ch, done_buf, DRV_UART_RX_BUF_SIZE);
+            }
             return;
         }
     }
 }
 
 /**
- * @brief UART 错误回调 — 清标志
+ * @brief UART 错误回调 — 打印错误原因，立即重启接收
+ * @note  DMA 接收模式下 HAL 将 ORE/FE/NE 等按阻塞错误处理并中止 RX DMA，
+ *        必须立即重启否则接收永久停止；活动缓冲数据可能已被污染，丢弃。
  */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
 {
-    __HAL_UART_CLEAR_FLAG(huart,
-        UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+    uint32_t err = HAL_UART_GetError(huart);
+
+    for (uint32_t ch = 0; ch < DRV_UART_CH_NUM; ch++) {
+        drv_uart_inst_t* inst = &s_inst[ch];
+        if (!inst->initialized || inst->huart != huart) {
+            continue;
+        }
+
+        LOG_E("drv_uart", "ch%u err=0x%02lX%s%s%s%s%s%s",
+            (unsigned)ch + 1U, (unsigned long)err,
+            (err & HAL_UART_ERROR_PE) ? " PE(parity)" : "",
+            (err & HAL_UART_ERROR_NE) ? " NE(noise)" : "",
+            (err & HAL_UART_ERROR_FE) ? " FE(frame)" : "",
+            (err & HAL_UART_ERROR_ORE) ? " ORE(overrun)" : "",
+            (err & HAL_UART_ERROR_DMA) ? " DMA(transfer)" : "",
+            (err & HAL_UART_ERROR_RTO) ? " RTO(timeout)" : "");
+
+        /* RX DMA 已被 HAL 中止，原地立即重启（rx_start 内部先清错误标志） */
+        if (!drv_uart_rx_start(inst)) {
+            inst->rx_need_restart = true;
+        }
+
+        /* TX DMA 错误同样会中止发送，防止 tx_busy 永久卡死 */
+        if (huart->gState == HAL_UART_STATE_READY) {
+            inst->tx_busy = false;
+        }
+        return;
+    }
+
+    /* 未匹配到实例（初始化早期），仅清标志防止错误中断风暴 */
+    drv_uart_rx_flush_errors(huart);
 }
 
-/** @brief 主循环调用：重启 Normal DMA 接收 */
+/** @brief 主循环调用：ISR 内重启失败时的兜底重启 */
 void drv_uart_rx_restart(drv_uart_channel_t ch)
 {
     if (ch >= DRV_UART_CH_NUM || !s_inst[ch].initialized) return;
     drv_uart_inst_t* inst = &s_inst[ch];
     if (inst->rx_need_restart) {
-        HAL_UART_Receive_DMA(inst->huart, inst->rx_buf, sizeof(inst->rx_buf));
-        inst->rx_need_restart = false;
+        if (drv_uart_rx_start(inst)) {
+            inst->rx_need_restart = false;
+        }
     }
 }
 

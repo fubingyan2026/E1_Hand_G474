@@ -50,13 +50,13 @@ const uint16_t MOTOR_ONE_FRAME_TIME_US = 400U;
  * 默认 0 = DMA 完成后立即发下帧
  * 例: -DMOTOR_POST_DLY_US=500 → 每帧后等 500µs
  */
-const uint16_t MOTOR_POST_DLY_US = 600U;
+const uint16_t MOTOR_POST_DLY_US = 400U;
 
 const float MAX_FREQUENTLY = 1000.0f / ((MOTOR_ONE_FRAME_TIME_US + MOTOR_POST_DLY_US) * 0.001f * 4);
 
 /** @brief 广播控制周期 (ms)，可通过编译宏覆盖
  *  默认 3ms → ~333 Hz。例: -DMOTOR_BCAST_PERIOD_MS=5 → 200 Hz */
-const uint16_t MOTOR_BCAST_PERIOD_MS = (1000 / MAX_FREQUENTLY + 1) * 2;
+const uint16_t MOTOR_BCAST_PERIOD_MS = (1000 / MAX_FREQUENTLY + 1) * 1;
 
 /**
  * @brief 分时发送 FSM 状态
@@ -100,7 +100,8 @@ typedef struct {
     uint32_t frame_tick; /**< 上一帧发送时间 (micros)，帧间隔控制 */
     uint8_t en_states[16]; /**< 各 ID 使能命令缓存 */
     msg_fifo_t rx_queue; /**< 接收帧队列（ISR → 主循环） */
-    uint8_t rx_qbuf[SRV_MOTOR_FRAME_SIZE * 8]; /**< 接收队列缓冲（8 帧深度） */
+    uint8_t rx_qbuf[SRV_MOTOR_FRAME_SIZE * 32]; /**< 接收队列缓冲（kfifo 向下取整为 512B ≈ 25 帧，
+                                                      需容纳单个 256B DMA 缓冲的 12 帧突发） */
 } srv_motor_group_t;
 
 /* 模块全局变量 --------------------------------------------------------------*/
