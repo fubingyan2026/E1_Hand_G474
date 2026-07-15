@@ -28,6 +28,8 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+#include "drv_uart.h"
+
 /* Exported constants --------------------------------------------------------*/
 
 /** @brief 电机分组定义 */
@@ -58,11 +60,40 @@ typedef enum {
 } srv_motor_can_id_t;
 
 /**
- * @brief 配置项索引
+ * @brief 配置项索引（can_id=0xA0 的参数 index，遵循 V2.0.8 协议）
  */
 typedef enum {
-    SRV_MOTOR_INDEX_INFO_01_R = 1, /**< 状态/故障/温度/电压 */
-    SRV_MOTOR_INDEX_INFO_02_R = 2, /**< 角度/速度/DQ电流 */
+    SRV_MOTOR_INDEX_INFO_01_R    = 1,  /**< 读：状态/故障/温度/电压 */
+    SRV_MOTOR_INDEX_INFO_02_R    = 2,  /**< 读：角度/速度/DQ电流 */
+    SRV_MOTOR_INDEX_UPDATE_FIN   = 3,  /**< 写：重置末端位置为零点 */
+    SRV_MOTOR_INDEX_SET_ID       = 4,  /**< 写：在线设置节点 ID (value=id<<7) */
+    SRV_MOTOR_INDEX_ENC_ZERO     = 5,  /**< 写：磁编码器零点标定 */
+    SRV_MOTOR_INDEX_COMM_SILENT  = 6,  /**< 写：通讯静默 */
+    SRV_MOTOR_INDEX_CTRL_MODE    = 7,  /**< 写：控制模式切换 (1=速度,2=位置,3=电流) */
+    SRV_MOTOR_INDEX_POS_KP       = 8,  /**< 写：位置环 KP (Q12) */
+    SRV_MOTOR_INDEX_POS_KD       = 9,  /**< 写：位置环 KD (Q12) */
+    SRV_MOTOR_INDEX_SPD_KP       = 10, /**< 写：速度环 KP (Q12) */
+    SRV_MOTOR_INDEX_SPD_KI       = 11, /**< 写：速度环 KI (Q15) */
+    SRV_MOTOR_INDEX_INFO_03_R    = 12, /**< 读：速度PI/位置PD参数 */
+    SRV_MOTOR_INDEX_SAVE_FLASH   = 13, /**< 写：参数保存到 FLASH (KEY=0xA5) */
+    SRV_MOTOR_INDEX_READ_FLASH   = 14, /**< 写：参数从 FLASH 读取 */
+    SRV_MOTOR_INDEX_BUAD_RATE    = 15, /**< 写：波特率设置 (0=500k,1=230400…) */
+    SRV_MOTOR_INDEX_POS_LPF_LV   = 16, /**< 写：位置平滑力度 0~5 */
+    SRV_MOTOR_INDEX_INFO_04_R    = 17, /**< 读：平滑力度/波特率 */
+    SRV_MOTOR_INDEX_MAX_CUR      = 18, /**< 写：最大输出电流 (Q15) */
+    SRV_MOTOR_INDEX_PROTECT_CUR  = 19, /**< 写：保护限制电流 (Q15) */
+    SRV_MOTOR_INDEX_PROTECT_LV1  = 20, /**< 写：电流保护等级1阈值 (Q15) */
+    SRV_MOTOR_INDEX_CUR_LV1_DELAY = 21,/**< 写：保护等级1持续时间 (ms) */
+    SRV_MOTOR_INDEX_RECV_CUR     = 22, /**< 写：电流恢复阈值 (Q15) */
+    SRV_MOTOR_INDEX_CUR_RECV_WIN = 23, /**< 写：恢复判定时间窗口 (ms) */
+    SRV_MOTOR_INDEX_INFO_05_R    = 24, /**< 读：保护等级1/恢复时间 */
+    SRV_MOTOR_INDEX_INFO_06_R    = 25, /**< 读：瞬爆冷却/瞬爆时长 */
+    SRV_MOTOR_INDEX_COLD_TIME    = 26, /**< 写：瞬间爆发冷却时长 (×25ms) */
+    SRV_MOTOR_INDEX_PLUS_TIME    = 27, /**< 写：瞬间爆发时长 */
+    SRV_MOTOR_INDEX_DRV_OT      = 28,  /**< 写：驱动器温度保护阈值 (°C) */
+    SRV_MOTOR_INDEX_SPD_LIMIT    = 30, /**< 写：电机转子最大速度限制 (Q15) */
+    SRV_MOTOR_INDEX_SN           = 31, /**< 写：SN 码 */
+    SRV_MOTOR_INDEX_INFO_07_R    = 32, /**< 读：SN 码 */
 } srv_motor_config_index_t;
 
 /**
@@ -74,6 +105,16 @@ typedef enum {
     SRV_MOTOR_CMD_DISABLE = 2, /**< 去使能释放 */
     SRV_MOTOR_CMD_SET_REF = 3, /**< 仅下发参考值 */
 } srv_motor_cmd_t;
+
+/**
+ * @brief 控制模式（CONFIG_CTRL_MODE_SW, index=7）
+ */
+typedef enum {
+    SRV_MOTOR_MODE_NOOP    = 0, /**< 无操作 (NOP) */
+    SRV_MOTOR_MODE_SPEED   = 1, /**< 速度模式 */
+    SRV_MOTOR_MODE_POSITION = 2, /**< 位置模式 */
+    SRV_MOTOR_MODE_CURRENT = 3, /**< 电流模式 */
+} srv_motor_ctrl_mode_t;
 
 /** @brief 轮询超时 */
 #define SRV_MOTOR_POLL_TIMEOUT_MS (10U) /**< 等待电机回复超时 (ms) */
@@ -155,7 +196,7 @@ typedef struct srv_motor_handle srv_motor_handle_t;
  */
 struct srv_motor_handle {
     uint8_t dev_id; /**< 设备 ID (1-based) */
-    uint8_t uart_idx; /**< UART 通道索引 (2=USART2, 3=USART3) */
+    drv_uart_channel_t uart_ch; /**< UART 通道 (DRV_UART_CH_1 / CH_2) */
 
     /* 控制设定 （外部写入，step 读取下发） */
     int16_t pos_ref; /**< Q7 目标角度 */
@@ -167,10 +208,9 @@ struct srv_motor_handle {
     srv_motor_feedback_t fb; /**< 最新反馈数据 */
 
     /* 轮询状态（内部使用） */
-    bool query_pending; /**< 正在等待回复 */
-    bool poll_retry; /**< 上次查询未回复，再试一次 */
     uint8_t query_index; /**< 当前查询的 index */
     bool cur_pending; /**< 电流限制待发送 */
+    srv_motor_ctrl_mode_t ctrl_mode; /**< 控制模式 (SRV_MOTOR_MODE_xxx) */
     bool initialized; /**< 初始化标志 */
 };
 
@@ -229,6 +269,32 @@ void srv_motor_set_current(srv_motor_handle_t* inst, int16_t cur_ref);
 
 /** @brief 按全局索引获取电机句柄 (0-8, 0-4=USART2, 5-8=USART3) */
 srv_motor_handle_t* srv_motor_get_handle(uint32_t index);
+
+/* --- 模式切换 --- */
+
+/**
+ * @brief 设置电机控制模式（配置 index=7，CONFIG_CTRL_MODE_SW）
+ * @param inst 电机句柄
+ * @param mode 控制模式 (SRV_MOTOR_MODE_xxx)
+ * @note  下个 FSM 周期 BCAST_EN 自动发送 SET_MODE 配置帧
+ */
+void srv_motor_set_mode(srv_motor_handle_t* inst, srv_motor_ctrl_mode_t mode);
+
+/* --- 零点校准 --- */
+
+/**
+ * @brief 重置当前末端位置为零点（CONFIG_UPDATE_FIN_ZERO, index=3）
+ * @param inst 电机句柄
+ * @note  立即发送配置帧，电机无回复。执行后当前物理位置被记为 0°
+ */
+void srv_motor_zero_reset(srv_motor_handle_t* inst);
+
+/**
+ * @brief 批量归零 — 同一 UART 通道上的所有电机（dev_id=0xFF 广播）
+ * @param ch  UART 通道
+ * @note  等待 DMA 空闲后发送，仅影响该串口上的电机
+ */
+void srv_motor_zero_reset_all(drv_uart_channel_t ch);
 
 /* --- 反馈接口 --- */
 

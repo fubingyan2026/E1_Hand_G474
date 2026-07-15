@@ -24,7 +24,7 @@
 /* Private constants ---------------------------------------------------------*/
 
 #define LOG_TASK_TX_BUF_SIZE (256)
-#define LOG_TASK_PERIOD_MS (200U)
+#define LOG_TASK_PERIOD_MS (20U)
 
 /* Private variables ---------------------------------------------------------*/
 
@@ -45,6 +45,7 @@ void log_task_init(void)
         .get_timestamp_cb = millis,
     };
     log_init(&log_cfg);
+    log_set_level(LOG_LEVEL_DEBUG);
 
     /* 注：drv_uart_init() 由 app_main 统一调用，此处不再单独调用 */
 
@@ -74,12 +75,6 @@ void log_task_set_output(log_task_output_t mode)
 static void log_timer_cb(void* user_data)
 {
     (void)user_data;
-    LOG_T("test", "hello.");
-    LOG_D("test", "hello.");
-    LOG_I("test", "hello.");
-    LOG_W("test", "hello.");
-    LOG_E("test", "hello.");
-
     /* ── TX ── */
     uint32_t log_len = log_tx_len();
     if (log_len > 0) {
@@ -107,11 +102,11 @@ static void log_timer_cb(void* user_data)
     }
 
     /* ── RX ── */
-    {
-        uint8_t rx_buf[128];
-        uint32_t rx_len = drv_uart_rx_read(DRV_UART_CH_1, rx_buf, sizeof(rx_buf));
-        if (rx_len > 0) {
-            log_hexdump("UART0", rx_buf, rx_len);
-        }
-    }
+    // {
+    //     uint8_t rx_buf[128];
+    //     uint32_t rx_len = drv_uart_rx_read(DRV_UART_CH_1, rx_buf, sizeof(rx_buf));
+    //     if (rx_len > 0) {
+    //         log_hexdump("UART0", rx_buf, rx_len);
+    //     }
+    // }
 }

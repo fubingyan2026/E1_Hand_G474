@@ -8,9 +8,10 @@
  * 由 motor_task_poll() 在主循环全速调用 srv_motor_step()。
  * TX 节拍由 drv_uart_is_tx_busy() 控制，广播周期由 millis() 控制。
  * 每路 UART 一个 fsm_t 实例，状态迁移：
- *   IDLE ─(3ms)─► BCAST_EN ─► BCAST_POS ─► BCAST_SPD ─► POLL_1 ─► POLL_2 ─► BCAST_CUR ─► RX ─► IDLE
- *                   (有脏则发,                        (轮询cur_pending,
- *                    无脏跳过)                          无则跳过)
+ *   STARTUP ─► BCAST_EN ─► BCAST_POS ─► POLL ─► BCAST_CUR ─► IDLE
+ *   (步骤0-2:              (模式/使能脏则发,  (位置广播    (查询反馈   (电流+限速
+ *    ENABLE→等1s           无脏跳过)         AB55/AC55)   1电机/周期) 1电机/周期)
+ *    →SET_MODE→IDLE)
  *
  *  广播 300 Hz，反馈 ~133/167 Hz/motor。
  *  每个 handler 在 DMA 空闲时执行发送 → fsm_step 自动迁移到下一状态。
@@ -22,36 +23,57 @@
 #include "drv_systick.h"
 #include "drv_uart.h"
 #include "fsm.h"
+#include "log.h"
+#include "msg_fifo.h"
 
 #include <string.h>
 
 /* Private constants ---------------------------------------------------------*/
 
 /** @brief 每组最大电机数（广播帧 8 槽位） */
-#define MOTOR_PER_GROUP 8U
+#define MOTOR_PER_GROUP 5U
 
-/** @brief 每 N 次 INFO_02_R 后插入一次 INFO_01_R */
-#define POLL_01_INTERVAL 10U
+/**
+ * @brief 各组串口通道配置（可通过编译宏覆盖）
+ * 例: cmake -DSRV_MOTOR_GRPA_UART=DRV_UART_CH_2 -DSRV_MOTOR_GRPB_UART=DRV_UART_CH_1 ...
+ */
+#define SRV_MOTOR_GRPA_UART DRV_UART_CH_1
+#define SRV_MOTOR_GRPB_UART DRV_UART_CH_2
 
-/** @brief 广播控制周期 (ms) */
-#define BCAST_PERIOD_MS 3U
+/** @brief 每 N 次 INFO_02_R 后插入一次 INFO_01_R ，必须大于1 ！*/
+const uint16_t POLL_01_INTERVAL = 4U;
+
+const uint16_t MOTOR_ONE_FRAME_TIME_US = 400U;
+
+/**
+ * @brief 帧间间隔 (µs)，可通过编译宏覆盖
+ * 默认 0 = DMA 完成后立即发下帧
+ * 例: -DMOTOR_POST_DLY_US=500 → 每帧后等 500µs
+ */
+const uint16_t MOTOR_POST_DLY_US = 600U;
+
+const float MAX_FREQUENTLY = 1000.0f / ((MOTOR_ONE_FRAME_TIME_US + MOTOR_POST_DLY_US) * 0.001f * 4);
+
+/** @brief 广播控制周期 (ms)，可通过编译宏覆盖
+ *  默认 3ms → ~333 Hz。例: -DMOTOR_BCAST_PERIOD_MS=5 → 200 Hz */
+const uint16_t MOTOR_BCAST_PERIOD_MS = (1000 / MAX_FREQUENTLY + 1) * 2;
 
 /**
  * @brief 分时发送 FSM 状态
  *
  * 每路 UART 独立运行该状态机，handler 在 DMA 空闲时发送一帧并迁移。
- * IDLE → BCAST_POS → BCAST_SPD → POLL_1 → POLL_2 → BCAST_EN(条件) → RX → IDLE
+ * STARTUP → BCAST_EN → BCAST_POS → POLL → BCAST_CUR → IDLE
+ * 位置广播每周期一次，轮询和电流各服务一个已注册电机。
  */
 typedef enum {
-    MOTOR_ST_IDLE = 0, /**< 等待 3ms 周期启动 */
-    MOTOR_ST_BCAST_POS, /**< 发送位置广播帧 */
-    MOTOR_ST_BCAST_SPD, /**< 发送速度广播帧 */
-    MOTOR_ST_POLL_1, /**< 发送第 1 路反馈查询 */
-    MOTOR_ST_POLL_2, /**< 发送第 2 路反馈查询 */
-    MOTOR_ST_BCAST_EN, /**< 发送使能广播帧（条件进入） */
-    MOTOR_ST_BCAST_CUR, /**< 发送电流限制帧（轮询每个电机） */
-    MOTOR_ST_RX, /**< 等待下一个 3ms 周期 */
-    MOTOR_STATE_COUNT /**< 状态总数（必须保持在最后） */
+    MOTOR_ST_STARTUP = 0, /**< 步骤0-2: ENABLE→等校准→SET_MODE */
+    MOTOR_ST_BCAST_EN, /**< 模式/使能广播（条件进入） */
+    MOTOR_ST_BCAST_POS, /**< 发送位置广播帧 AB55/AC55 交替 */
+    MOTOR_ST_POLL, /**< 反馈查询（1 个已注册电机/周期） */
+    MOTOR_ST_BCAST_CUR, /**< 配置 MAX_CUR（1 电机/周期） */
+    MOTOR_ST_BCAST_LIM, /**< 配置 SPD_LIMIT（同电机，紧跟 CUR 后） */
+    MOTOR_ST_IDLE, /**< 等待广播周期启动 */
+    MOTOR_STATE_COUNT /**< 状态总数 */
 } motor_step_state_t;
 
 /* 电机组结构体 --------------------------------------------------------------*/
@@ -65,27 +87,52 @@ typedef struct {
     fsm_t fsm; /**< 分时发送状态机 */
     srv_motor_handle_t* motors[MOTOR_PER_GROUP]; /**< 电机指针数组 */
     uint8_t count; /**< 已注册电机数 */
-    uint8_t uart_idx; /**< UART 索引 (2=USART2, 3=USART3) */
+    drv_uart_channel_t uart_ch; /**< UART 通道 (DRV_UART_CH_1/CH_2) */
     uint8_t poll_cursor; /**< 轮询游标 */
     uint32_t poll_02_cnt; /**< INFO_02_R 计数器 */
     uint32_t cycle_start; /**< 当前广播周期起始时间 (millis) */
     uint8_t cur_cursor; /**< 电流限制轮询游标 */
     bool en_dirty; /**< 使能状态脏标志 */
+    bool mode_dirty; /**< 控制模式脏标志（需发送 SET_MODE） */
+    uint8_t startup_step; /**< 启动步骤: 0=ENABLE,1=校准等待,2=SET_MODE */
+    uint8_t startup_motor; /**< 当前已发到第几个电机 (0..count-1) */
+    uint32_t enable_time; /**< ENABLE 发送时间 (millis)，用于校准计时 */
+    uint32_t frame_tick; /**< 上一帧发送时间 (micros)，帧间隔控制 */
     uint8_t en_states[16]; /**< 各 ID 使能命令缓存 */
+    msg_fifo_t rx_queue; /**< 接收帧队列（ISR → 主循环） */
+    uint8_t rx_qbuf[SRV_MOTOR_FRAME_SIZE * 8]; /**< 接收队列缓冲（8 帧深度） */
 } srv_motor_group_t;
 
 /* 模块全局变量 --------------------------------------------------------------*/
 
-/** @brief 两组电机实例（索引 0=USART2, 1=USART3） */
-static srv_motor_group_t s_grp[2];
+/** @brief 两组电机实例 */
+static srv_motor_group_t s_grp_a;  /**< 组A — USART1 (DRV_UART_CH_1) */
+static srv_motor_group_t s_grp_b;  /**< 组B — USART2 (DRV_UART_CH_2) */
+
+/** @brief 根据 uart_ch 获取组指针（自动匹配各实例的 uart_ch 配置） */
+static srv_motor_group_t* s_grp_from_ch(drv_uart_channel_t ch)
+{
+    if (s_grp_a.uart_ch == ch) return &s_grp_a;
+    if (s_grp_b.uart_ch == ch) return &s_grp_b;
+    return NULL;
+}
+
+/** @brief 由组指针反查编号（0=A, 1=B，用于日志） */
+static uint32_t s_grp_idx(const srv_motor_group_t* g)
+{
+    if (g == &s_grp_b) return 1U;
+    return 0U;
+}
+
 
 /** @brief 电机句柄静态存储 + 扁平索引表 */
 static srv_motor_handle_t s_handle[SRV_MOTOR_TOTAL];
 
-/** @brief 初始化配置表 */
-static const struct { uint8_t dev_id; uint8_t uart; } s_cfg[SRV_MOTOR_TOTAL] = {
-    {1,2}, {2,2}, {3,2}, {4,2}, {5,2},
-    {1,3}, {2,3}, {3,3}, {4,3},
+/** @brief 初始化配置表（每组电机绑定到对应组的串口通道） */
+static const struct { uint8_t dev_id; drv_uart_channel_t uart; } s_cfg[SRV_MOTOR_TOTAL] = {
+    {1,SRV_MOTOR_GRPA_UART},{2,SRV_MOTOR_GRPA_UART},{3,SRV_MOTOR_GRPA_UART},{4,SRV_MOTOR_GRPA_UART},{5,SRV_MOTOR_GRPA_UART},
+    {1,SRV_MOTOR_GRPB_UART}, {2,SRV_MOTOR_GRPB_UART}, {3,SRV_MOTOR_GRPB_UART},//
+     {4,SRV_MOTOR_GRPB_UART},
 };
 
 /** @brief 模块初始化标志 */
@@ -98,15 +145,14 @@ static fsm_guard_t s_transitions[MOTOR_STATE_COUNT * MOTOR_STATE_COUNT];
 
 /* 函数原型 ------------------------------------------------------------------*/
 
-/* FSM handler */
-static fsm_state_t fsm_idle(fsm_t* ctx);
-static fsm_state_t fsm_bcast_pos(fsm_t* ctx);
-static fsm_state_t fsm_bcast_spd(fsm_t* ctx);
-static fsm_state_t fsm_poll_1(fsm_t* ctx);
-static fsm_state_t fsm_poll_2(fsm_t* ctx);
+/* FSM handler（按执行时序排列） */
+static fsm_state_t fsm_startup(fsm_t* ctx);
 static fsm_state_t fsm_bcast_en(fsm_t* ctx);
+static fsm_state_t fsm_bcast_pos(fsm_t* ctx);
+static fsm_state_t fsm_poll(fsm_t* ctx);
 static fsm_state_t fsm_bcast_cur(fsm_t* ctx);
-static fsm_state_t fsm_rx(fsm_t* ctx);
+static fsm_state_t fsm_bcast_lim(fsm_t* ctx);
+static fsm_state_t fsm_idle(fsm_t* ctx);
 
 /* 帧构建 */
 static void build_std_frame(uint8_t buf[SRV_MOTOR_FRAME_SIZE],
@@ -119,7 +165,7 @@ static void build_poll_frame(uint8_t buf[SRV_MOTOR_FRAME_SIZE],
     uint8_t dev_id, uint8_t cfg_index);
 
 /* 辅助 */
-static void motor_send_broadcast(srv_motor_group_t* g, uint16_t head2);
+static void motor_rx_cb(drv_uart_channel_t ch, const uint8_t* data, uint32_t len);
 static void motor_poll_one(srv_motor_group_t* g, drv_uart_channel_t ch);
 static void motor_drain_rx(srv_motor_group_t* g, drv_uart_channel_t ch);
 static void motor_parse_reply(const uint8_t frame[SRV_MOTOR_FRAME_SIZE],
@@ -139,14 +185,13 @@ srv_motor_error_t srv_motor_init(void)
     memset(s_handlers, 0, sizeof(s_handlers));
     memset(s_transitions, 0, sizeof(s_transitions));
 
-    s_handlers[MOTOR_ST_IDLE] = fsm_idle;
-    s_handlers[MOTOR_ST_BCAST_POS] = fsm_bcast_pos;
-    s_handlers[MOTOR_ST_BCAST_SPD] = fsm_bcast_spd;
-    s_handlers[MOTOR_ST_POLL_1] = fsm_poll_1;
-    s_handlers[MOTOR_ST_POLL_2] = fsm_poll_2;
+    s_handlers[MOTOR_ST_STARTUP]   = fsm_startup;
     s_handlers[MOTOR_ST_BCAST_EN]  = fsm_bcast_en;
+    s_handlers[MOTOR_ST_BCAST_POS] = fsm_bcast_pos;
+    s_handlers[MOTOR_ST_POLL]      = fsm_poll;
     s_handlers[MOTOR_ST_BCAST_CUR] = fsm_bcast_cur;
-    s_handlers[MOTOR_ST_RX]        = fsm_rx;
+    s_handlers[MOTOR_ST_BCAST_LIM] = fsm_bcast_lim;
+    s_handlers[MOTOR_ST_IDLE]      = fsm_idle;
 
     fsm_config_t fsm_cfg = {
         .handlers = s_handlers,
@@ -156,18 +201,43 @@ srv_motor_error_t srv_motor_init(void)
     fsm_fill(&fsm_cfg, fsm_always_true);
 
     /* 初始化两组电机 */
-    for (uint32_t i = 0; i < 2; i++) {
-        srv_motor_group_t* g = &s_grp[i];
-        memset(g, 0, sizeof(*g));
-        g->uart_idx = (uint8_t)(i + 2); /* 2=USART2, 3=USART3 */
-        fsm_init(&g->fsm, MOTOR_ST_IDLE, &fsm_cfg);
-    }
+    memset(&s_grp_a, 0, sizeof(s_grp_a));
+    s_grp_a.uart_ch = SRV_MOTOR_GRPA_UART;
+    fsm_init(&s_grp_a.fsm, MOTOR_ST_STARTUP, &fsm_cfg);
+    msg_fifo_init(&s_grp_a.rx_queue, s_grp_a.rx_qbuf, sizeof(s_grp_a.rx_qbuf), SRV_MOTOR_FRAME_SIZE);
+    LOG_I("motor", "grpA init ok, ch=%u", (unsigned)s_grp_a.uart_ch);
+
+    memset(&s_grp_b, 0, sizeof(s_grp_b));
+    s_grp_b.uart_ch = SRV_MOTOR_GRPB_UART;
+    fsm_init(&s_grp_b.fsm, MOTOR_ST_STARTUP, &fsm_cfg);
+    msg_fifo_init(&s_grp_b.rx_queue, s_grp_b.rx_qbuf, sizeof(s_grp_b.rx_qbuf), SRV_MOTOR_FRAME_SIZE);
+    LOG_I("motor", "grpB init ok, ch=%u", (unsigned)s_grp_b.uart_ch);
+
+    s_initialized = true;
+
+    /* 注册 UART 接收回调 — ISR 中入队，主循环解析 */
+    drv_uart_register_rx_callback(s_grp_a.uart_ch, motor_rx_cb);
+    drv_uart_register_rx_callback(s_grp_b.uart_ch, motor_rx_cb);
 
     /* 根据配置表注册全部电机 */
     for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++)
         srv_motor_register(&s_handle[i], s_cfg[i].dev_id, s_cfg[i].uart);
 
-    s_initialized = true;
+    /* 初始参考值：pos 广播目标，spd/cur 用作 SPD_LIMIT / MAX_CUR 配置值 */
+    for (uint32_t i = 0; i < MOTOR_PER_GROUP; i++) {
+        if (s_grp_a.motors[i]) {
+            s_grp_a.motors[i]->pos_ref = 0;          /* 停原点 */
+            s_grp_a.motors[i]->spd_ref = 6000;       /* SPD_LIMIT ~15% */
+            s_grp_a.motors[i]->cur_ref = 1000;       /* MAX_CUR  ~1.37A */
+        }
+        if (s_grp_b.motors[i]) {
+            s_grp_b.motors[i]->pos_ref = 0;
+            s_grp_b.motors[i]->spd_ref = 6000;
+            s_grp_b.motors[i]->cur_ref = 1000;
+        }
+    }
+
+    LOG_I("motor", "srv_motor init done, %u motors total", SRV_MOTOR_TOTAL);
     return SRV_MOTOR_OK;
 }
 
@@ -175,14 +245,22 @@ void srv_motor_deinit(void)
 {
     if (!s_initialized)
         return;
-    for (uint32_t i = 0; i < 2; i++) {
-        srv_motor_group_t* g = &s_grp[i];
-        for (uint32_t j = 0; j < MOTOR_PER_GROUP; j++)
-            if (g->motors[j])
-                g->motors[j]->initialized = false;
-        memset(g, 0, sizeof(*g));
+    for (uint32_t j = 0; j < MOTOR_PER_GROUP; j++) {
+        if (s_grp_a.motors[j])
+            s_grp_a.motors[j]->initialized = false;
     }
+    memset(&s_grp_a, 0, sizeof(s_grp_a));
+    LOG_I("motor", "grpA deinit ok");
+
+    for (uint32_t j = 0; j < MOTOR_PER_GROUP; j++) {
+        if (s_grp_b.motors[j])
+            s_grp_b.motors[j]->initialized = false;
+    }
+    memset(&s_grp_b, 0, sizeof(s_grp_b));
+    LOG_I("motor", "grpB deinit ok");
+
     s_initialized = false;
+    LOG_I("motor", "srv_motor deinit all done");
 }
 
 /* --- 电机注册 --- */
@@ -192,22 +270,22 @@ srv_motor_error_t srv_motor_register(srv_motor_handle_t* inst,
 {
     if (!inst || !s_initialized)
         return SRV_MOTOR_ERROR_NULL_PTR;
-    if (dev_id < 1 || dev_id > MOTOR_PER_GROUP)
-        return SRV_MOTOR_ERROR_INVALID_PARAM;
-    if (uart_idx != 2 && uart_idx != 3)
+    if (dev_id < 1 || dev_id > MOTOR_PER_GROUP || uart_idx >= 2)
         return SRV_MOTOR_ERROR_INVALID_PARAM;
 
-    srv_motor_group_t* g = &s_grp[uart_idx - 2];
+    srv_motor_group_t* g = s_grp_from_ch((drv_uart_channel_t)uart_idx);
     if (g->motors[dev_id - 1])
         return SRV_MOTOR_ERROR_ALREADY_EXIST;
 
     memset(inst, 0, sizeof(*inst));
     inst->dev_id = dev_id;
-    inst->uart_idx = uart_idx;
+    inst->uart_ch = (drv_uart_channel_t)uart_idx;
     inst->initialized = true;
 
     g->motors[dev_id - 1] = inst;
     g->count++;
+    LOG_I("motor", "reg motor dev=%u ch=%u grp%u total=%u",
+        dev_id, (unsigned)uart_idx, (unsigned)uart_idx, (unsigned)g->count);
     return SRV_MOTOR_OK;
 }
 
@@ -221,6 +299,8 @@ void srv_motor_set_setpoint(srv_motor_handle_t* inst,
     inst->pos_ref = pos_ref;
     inst->spd_ref = spd_ref;
     inst->cur_ref = cur_ref;
+    LOG_D("motor", "setpoint dev=%u pos=%d spd=%d cur=%d",
+        inst->dev_id, pos_ref, spd_ref, cur_ref);
 }
 
 void srv_motor_enable(srv_motor_handle_t* inst, bool en)
@@ -229,8 +309,9 @@ void srv_motor_enable(srv_motor_handle_t* inst, bool en)
         return;
 
     inst->en_cmd = en ? SRV_MOTOR_CMD_ENABLE : SRV_MOTOR_CMD_DISABLE;
+    LOG_I("motor", "motor dev=%u %s", inst->dev_id, en ? "ENABLE" : "DISABLE");
 
-    srv_motor_group_t* g = &s_grp[inst->uart_idx - 2];
+    srv_motor_group_t* g = s_grp_from_ch(inst->uart_ch);
     uint8_t slot = inst->dev_id - 1;
     g->en_states[slot] = inst->en_cmd;
     g->en_dirty = true;
@@ -242,11 +323,65 @@ void srv_motor_set_current(srv_motor_handle_t* inst, int16_t cur_ref)
     if (inst->cur_ref == cur_ref) return;  /* 未变化，跳过 */
     inst->cur_ref = cur_ref;
     inst->cur_pending = true;
+    LOG_D("motor", "cur limit dev=%u cur=%d", inst->dev_id, cur_ref);
 }
 
 srv_motor_handle_t* srv_motor_get_handle(uint32_t index)
 {
     return (index < SRV_MOTOR_TOTAL) ? &s_handle[index] : NULL;
+}
+
+/* --- 模式切换 --- */
+
+void srv_motor_set_mode(srv_motor_handle_t* inst, srv_motor_ctrl_mode_t mode)
+{
+    if (!inst || !inst->initialized)
+        return;
+    if (inst->ctrl_mode == mode)
+        return; /* 未变化 */
+
+    inst->ctrl_mode = mode;
+    srv_motor_group_t* g = s_grp_from_ch(inst->uart_ch);
+    g->mode_dirty = true;
+    LOG_I("motor", "dev=%u mode switch to %u", inst->dev_id, mode);
+}
+
+/* --- 零点校准 --- */
+
+void srv_motor_zero_reset(srv_motor_handle_t* inst)
+{
+    if (!inst || !inst->initialized)
+        return;
+
+    srv_motor_group_t* g = s_grp_from_ch(inst->uart_ch);
+
+    /* 等待 DMA 空闲再发（通常等 <1ms，零点是低频操作不阻塞业务） */
+    while (drv_uart_is_tx_busy(g->uart_ch)) { /* spin */ }
+
+    uint8_t data[8] = { inst->dev_id, SRV_MOTOR_INDEX_UPDATE_FIN };
+    uint8_t frame[SRV_MOTOR_FRAME_SIZE];
+    build_std_frame(frame, SRV_MOTOR_CAN_ID_CONFIG, data);
+    drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
+
+    LOG_I("motor", "dev=%u zero reset sent", inst->dev_id);
+}
+
+void srv_motor_zero_reset_all(drv_uart_channel_t ch)
+{
+    srv_motor_group_t* g = s_grp_from_ch(ch);
+    if (!g) return;
+
+    for (uint32_t i = 0; i < MOTOR_PER_GROUP; i++) {
+        if (g->motors[i]) {
+            while (drv_uart_is_tx_busy(ch)) { /* spin */ }
+            uint8_t data[8] = { g->motors[i]->dev_id, SRV_MOTOR_INDEX_UPDATE_FIN };
+            uint8_t frame[SRV_MOTOR_FRAME_SIZE];
+            build_std_frame(frame, SRV_MOTOR_CAN_ID_CONFIG, data);
+            drv_uart_send(ch, frame, SRV_MOTOR_FRAME_SIZE);
+        }
+    }
+
+    LOG_I("motor", "zero reset ALL on ch=%u", (unsigned)ch);
 }
 
 /* --- 反馈接口 --- */
@@ -268,19 +403,27 @@ void srv_motor_step(void)
     if (!s_initialized)
         return;
 
-    for (uint32_t i = 0; i < 2; i++) {
-        srv_motor_group_t* g = &s_grp[i];
-        if (!g->count)
-            continue;
-
-        drv_uart_channel_t ch = (drv_uart_channel_t)(DRV_UART_CH_1 + i);
-
-        /* RX 解析始终运行，不与 TX 状态耦合 */
-        motor_drain_rx(g, ch);
-
-        /* 驱动 FSM：每步执行当前状态 handler，条件满足时自动迁移 */
-        fsm_step(&g->fsm);
+    /* ── 组A ── */
+    drv_uart_rx_restart(s_grp_a.uart_ch);
+    motor_drain_rx(&s_grp_a, s_grp_a.uart_ch);
+    if (s_grp_a.count) {
+        uint32_t now = micros();
+        if (now - s_grp_a.frame_tick >= (MOTOR_POST_DLY_US + MOTOR_ONE_FRAME_TIME_US)) {
+            fsm_step(&s_grp_a.fsm);
+            s_grp_a.frame_tick = micros();
+        }
     }
+
+    // /* ── 组B ── */
+    // motor_drain_rx(&s_grp_b, s_grp_b.uart_ch);
+    // if (s_grp_b.count) {
+    //     uint32_t now = micros();
+    //     if (now - s_grp_b.frame_tick >= (MOTOR_POST_DLY_US + MOTOR_ONE_FRAME_TIME_US)) {
+    //         fsm_step(&s_grp_b.fsm);
+    //         s_grp_b.frame_tick = micros();
+    //     }
+    // }
+
 }
 
 /* ====================================================================
@@ -292,142 +435,221 @@ void srv_motor_step(void)
  * ==================================================================== */
 
 /**
- * @brief IDLE 状态 — 等待 3ms 广播周期间隔
+ * @brief STARTUP 状态 — 启动序列：ENABLE→等校准→SET_MODE→IDLE
+ *
+ * 每个步骤在 DMA 空闲时发送一帧，自动推进。
+ * 校准等待期间不阻塞主循环。
  */
-static fsm_state_t fsm_idle(fsm_t* ctx)
+static fsm_state_t fsm_startup(fsm_t* ctx)
 {
     srv_motor_group_t* g = motor_grp_from_fsm(ctx);
-    if (millis() - g->cycle_start >= BCAST_PERIOD_MS) {
-        g->cycle_start = millis();
-        return MOTOR_ST_BCAST_EN; /* 优先检查使能广播 */
+
+    switch (g->startup_step) {
+    case 0: /* ENABLE 所有电机 */
+        if (!drv_uart_is_tx_busy(g->uart_ch)) {
+            /* 跳过空槽位 */
+            while (g->startup_motor < MOTOR_PER_GROUP && !g->motors[g->startup_motor])
+                g->startup_motor++;
+
+            if (g->startup_motor >= MOTOR_PER_GROUP) {
+                /* 全部发完 → 进入等待校准 */
+                g->startup_step = 1;
+                break;
+            }
+
+            uint8_t data[8] = { 0,0, 0,0, 0,0, SRV_MOTOR_CMD_ENABLE, 0 };
+            uint8_t f[20];
+            build_std_frame(f, g->motors[g->startup_motor]->dev_id, data);
+            drv_uart_send(g->uart_ch, f, 20);
+            g->enable_time = millis();
+            LOG_I("motor", "grp%u ENABLE dev=%u (%u/%u)",
+                (unsigned)s_grp_idx(g), g->motors[g->startup_motor]->dev_id,
+                (unsigned)(g->startup_motor + 1), (unsigned)g->count);
+            g->startup_motor++;
+        }
+        return MOTOR_ST_STARTUP;
+
+    case 1: /* 等待编码器校准 ~1.5s */
+        if (millis() - g->enable_time >= 1500) {
+            g->startup_motor = 0;
+            g->startup_step = 2;
+        }
+        return MOTOR_ST_STARTUP;
+
+    case 2: /* SET_MODE 所有电机 */
+        if (!drv_uart_is_tx_busy(g->uart_ch)) {
+            while (g->startup_motor < MOTOR_PER_GROUP && !g->motors[g->startup_motor])
+                g->startup_motor++;
+
+            if (g->startup_motor >= MOTOR_PER_GROUP) {
+                LOG_I("motor", "grp%u startup done, entering run",
+                    (unsigned)s_grp_idx(g));
+                g->cycle_start = millis();
+                return MOTOR_ST_IDLE;
+            }
+
+            uint8_t data[8] = { g->motors[g->startup_motor]->dev_id,
+                SRV_MOTOR_INDEX_CTRL_MODE, 0, 0,
+                SRV_MOTOR_MODE_POSITION, 0, 0, 0 };
+            uint8_t f[20];
+            build_std_frame(f, SRV_MOTOR_CAN_ID_CONFIG, data);
+            drv_uart_send(g->uart_ch, f, 20);
+            LOG_I("motor", "grp%u SET_MODE dev=%u (%u/%u)",
+                (unsigned)s_grp_idx(g), g->motors[g->startup_motor]->dev_id,
+                (unsigned)(g->startup_motor + 1), (unsigned)g->count);
+            g->startup_motor++;
+        }
+        return MOTOR_ST_STARTUP;
+
+    default:
+        break;
     }
-    return MOTOR_ST_IDLE;
+    return MOTOR_ST_STARTUP; /* step 0 全部发完 → 无 break 继续下一轮 */
 }
 
 /**
- * @brief BCAST_POS 状态 — 发送位置广播帧
- */
-static fsm_state_t fsm_bcast_pos(fsm_t* ctx)
-{
-    srv_motor_group_t* g = motor_grp_from_fsm(ctx);
-    drv_uart_channel_t ch = (drv_uart_channel_t)(DRV_UART_CH_1 + (g->uart_idx - 2));
-
-    if (!drv_uart_is_tx_busy(ch)) {
-        motor_send_broadcast(g, SRV_MOTOR_BC_POS_ID18);
-        return MOTOR_ST_BCAST_SPD;
-    }
-    return MOTOR_ST_BCAST_POS; /* DMA 忙，等候 */
-}
-
-/**
- * @brief BCAST_SPD 状态 — 发送速度广播帧
- */
-static fsm_state_t fsm_bcast_spd(fsm_t* ctx)
-{
-    srv_motor_group_t* g = motor_grp_from_fsm(ctx);
-    drv_uart_channel_t ch = (drv_uart_channel_t)(DRV_UART_CH_1 + (g->uart_idx - 2));
-
-    if (!drv_uart_is_tx_busy(ch)) {
-        motor_send_broadcast(g, SRV_MOTOR_BC_SPD_ID18);
-        return MOTOR_ST_POLL_1;
-    }
-    return MOTOR_ST_BCAST_SPD;
-}
-
-/**
- * @brief POLL_1 状态 — 发送第 1 路反馈查询
- */
-static fsm_state_t fsm_poll_1(fsm_t* ctx)
-{
-    srv_motor_group_t* g = motor_grp_from_fsm(ctx);
-    drv_uart_channel_t ch = (drv_uart_channel_t)(DRV_UART_CH_1 + (g->uart_idx - 2));
-
-    if (!drv_uart_is_tx_busy(ch)) {
-        motor_poll_one(g, ch);
-        return MOTOR_ST_POLL_2;
-    }
-    return MOTOR_ST_POLL_1;
-}
-
-/**
- * @brief POLL_2 状态 — 发送第 2 路反馈查询
- */
-static fsm_state_t fsm_poll_2(fsm_t* ctx)
-{
-    srv_motor_group_t* g = motor_grp_from_fsm(ctx);
-    drv_uart_channel_t ch = (drv_uart_channel_t)(DRV_UART_CH_1 + (g->uart_idx - 2));
-
-    if (!drv_uart_is_tx_busy(ch)) {
-        motor_poll_one(g, ch);
-        return MOTOR_ST_BCAST_CUR;
-    }
-    return MOTOR_ST_POLL_2;
-}
-
-/**
- * @brief RX 状态 — 回到 IDLE 等待下个 3ms 周期
- */
-static fsm_state_t fsm_rx(fsm_t* ctx)
-{
-    (void)ctx;
-    return MOTOR_ST_IDLE;
-}
-
-/**
- * @brief BCAST_EN 状态 — 若使能有变化则发送广播，否则直接跳过到 BCAST_POS
+ * @brief BCAST_EN 状态 — 模式切换 + 使能广播（条件进入）
  */
 static fsm_state_t fsm_bcast_en(fsm_t* ctx)
 {
     srv_motor_group_t* g = motor_grp_from_fsm(ctx);
 
+    /* 控制模式切换（每轮最多处理一项） */
+    if (g->mode_dirty) {
+        if (!drv_uart_is_tx_busy(g->uart_ch)) {
+            for (uint32_t i = 0; i < MOTOR_PER_GROUP; i++) {
+                if (g->motors[i]) {
+                    uint8_t data[8] = { g->motors[i]->dev_id,
+                        SRV_MOTOR_INDEX_CTRL_MODE, 0, 0,
+                        g->motors[i]->ctrl_mode, 0, 0, 0 };
+                    uint8_t f[20];
+                    build_std_frame(f, SRV_MOTOR_CAN_ID_CONFIG, data);
+                    drv_uart_send(g->uart_ch, f, 20);
+                }
+            }
+            g->mode_dirty = false;
+            LOG_D("motor", "grp%u mode cfg sent", (unsigned)s_grp_idx(g));
+        }
+        return MOTOR_ST_BCAST_EN; /* 暂不退：下轮取 en_dirty */
+    }
+
+    /* 使能广播 */
     if (!g->en_dirty)
         return MOTOR_ST_BCAST_POS; /* 无变化，直接跳过 */
 
-    drv_uart_channel_t ch = (drv_uart_channel_t)(DRV_UART_CH_1 + (g->uart_idx - 2));
-    if (!drv_uart_is_tx_busy(ch)) {
+    if (!drv_uart_is_tx_busy(g->uart_ch)) {
         uint8_t frame[SRV_MOTOR_FRAME_SIZE];
         build_enable_frame(frame, g->en_states);
-        drv_uart_send(ch, frame, SRV_MOTOR_FRAME_SIZE);
+        drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
         g->en_dirty = false;
+        LOG_D("motor", "grp%u en bcast sent", (unsigned)s_grp_idx(g));
         return MOTOR_ST_BCAST_POS;
     }
     return MOTOR_ST_BCAST_EN; /* DMA 忙，等待 */
 }
 
 /**
- * @brief BCAST_CUR 状态 — 轮询发送电流限制帧
+ * @brief BCAST_POS 状态 — 发送位置广播帧 AB55/AC55 交替
  */
+static fsm_state_t fsm_bcast_pos(fsm_t* ctx)
+{
+    srv_motor_group_t* g = motor_grp_from_fsm(ctx);
+
+    if (!drv_uart_is_tx_busy(g->uart_ch)) {
+        int16_t values[8];
+        for (uint32_t i = 0; i < MOTOR_PER_GROUP; i++)
+            values[i] = g->motors[i] ? g->motors[i]->pos_ref : 0;
+
+        uint8_t frame[SRV_MOTOR_FRAME_SIZE];
+        build_bcast_frame(frame, SRV_MOTOR_BC_POS_ID18, values);
+        drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
+
+        return MOTOR_ST_POLL;
+    }
+    return MOTOR_ST_BCAST_POS;
+}
+
 /**
- * @brief BCAST_CUR 状态 — 每周期最多发送 1 个电机的电流限制
- *
- * 轮询找到下一个 cur_pending 的电机，DMA 空闲则发送标准帧。
- * DMA 忙时不阻塞，直接跳到 RX 下周期再试。
+ * @brief POLL 状态 — 反馈查询，每周期 1 个已注册电机
+ */
+static fsm_state_t fsm_poll(fsm_t* ctx)
+{
+    srv_motor_group_t* g = motor_grp_from_fsm(ctx);
+
+    if (!drv_uart_is_tx_busy(g->uart_ch)) {
+        motor_poll_one(g, g->uart_ch);
+        LOG_D("motor", "grp%u poll ok", (unsigned)s_grp_idx(g));
+        return MOTOR_ST_BCAST_CUR;
+    }
+    return MOTOR_ST_POLL;
+}
+
+/**
+ * @brief IDLE 状态 — 等待广播周期间隔
+ */
+static fsm_state_t fsm_idle(fsm_t* ctx)
+{
+    srv_motor_group_t* g = motor_grp_from_fsm(ctx);
+    if (millis() - g->cycle_start >= MOTOR_BCAST_PERIOD_MS) {
+        g->cycle_start = millis();
+        LOG_D("motor", "grp%u tick, start bcast seq", (unsigned)s_grp_idx(g));
+        return MOTOR_ST_BCAST_EN; /* 优先检查使能广播 */
+    }
+    return MOTOR_ST_IDLE;
+}
+
+/**
+ * @brief BCAST_CUR — 发送 MAX_CUR 配置，同周期紧接 BCAST_LIM
  */
 static fsm_state_t fsm_bcast_cur(fsm_t* ctx)
 {
     srv_motor_group_t* g = motor_grp_from_fsm(ctx);
-    drv_uart_channel_t ch = (drv_uart_channel_t)(DRV_UART_CH_1 + (g->uart_idx - 2));
+    if (!g->count) return MOTOR_ST_IDLE;
 
-    for (uint32_t n = 0; n < MOTOR_PER_GROUP; n++) {
-        srv_motor_handle_t* m = g->motors[g->cur_cursor];
-        g->cur_cursor = (g->cur_cursor + 1) % MOTOR_PER_GROUP;
+    uint8_t slot = 0;
+    for (uint8_t n = 0; slot < MOTOR_PER_GROUP && n <= g->cur_cursor; slot++)
+        if (g->motors[slot]) n++;
+    slot--;
+    if (slot >= MOTOR_PER_GROUP || !g->motors[slot]) return MOTOR_ST_IDLE;
+    srv_motor_handle_t* m = g->motors[slot];
 
-        if (m && m->cur_pending && !drv_uart_is_tx_busy(ch)) {
-            uint8_t data[8] = {0};
-            data[4] = (uint8_t)m->cur_ref;
-            data[5] = (uint8_t)(m->cur_ref >> 8);
-            data[6] = SRV_MOTOR_CMD_SET_REF;
-
-            uint8_t frame[SRV_MOTOR_FRAME_SIZE];
-            build_std_frame(frame, m->dev_id, data);
-            drv_uart_send(ch, frame, SRV_MOTOR_FRAME_SIZE);
-
-            m->cur_pending = false;
-            break;  /* 本周期只发一个 */
-        }
+    if (!drv_uart_is_tx_busy(g->uart_ch)) {
+        uint8_t data[8] = { m->dev_id, SRV_MOTOR_INDEX_MAX_CUR, 0, 0,
+            (uint8_t)m->cur_ref, (uint8_t)(m->cur_ref >> 8), 0, 0 };
+        uint8_t frame[SRV_MOTOR_FRAME_SIZE];
+        build_std_frame(frame, SRV_MOTOR_CAN_ID_CONFIG, data);
+        drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
+        LOG_I("motor", "cfg MAX_CUR dev=%u val=%d", m->dev_id, m->cur_ref);
+        return MOTOR_ST_BCAST_LIM;
     }
+    return MOTOR_ST_BCAST_CUR;
+}
 
-    return MOTOR_ST_RX;  /* 无论是否发送，继续下个状态 */
+/**
+ * @brief BCAST_LIM — 发送 SPD_LIMIT 配置，然后推进游标
+ */
+static fsm_state_t fsm_bcast_lim(fsm_t* ctx)
+{
+    srv_motor_group_t* g = motor_grp_from_fsm(ctx);
+
+    uint8_t slot = 0;
+    for (uint8_t n = 0; slot < MOTOR_PER_GROUP && n <= g->cur_cursor; slot++)
+        if (g->motors[slot]) n++;
+    slot--;
+    if (slot >= MOTOR_PER_GROUP || !g->motors[slot]) return MOTOR_ST_IDLE;
+    srv_motor_handle_t* m = g->motors[slot];
+
+    if (!drv_uart_is_tx_busy(g->uart_ch)) {
+        uint8_t data[8] = { m->dev_id, SRV_MOTOR_INDEX_SPD_LIMIT, 0, 0,
+            (uint8_t)m->spd_ref, (uint8_t)(m->spd_ref >> 8), 0, 0 };
+        uint8_t frame[SRV_MOTOR_FRAME_SIZE];
+        build_std_frame(frame, SRV_MOTOR_CAN_ID_CONFIG, data);
+        drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
+        LOG_I("motor", "cfg SPD_LIMIT dev=%u val=%d", m->dev_id, m->spd_ref);
+        g->cur_cursor = (uint8_t)((g->cur_cursor + 1) % g->count);
+        return MOTOR_ST_IDLE;
+    }
+    return MOTOR_ST_BCAST_LIM;
 }
 
 /* ====================================================================
@@ -460,7 +682,7 @@ static void build_std_frame(uint8_t buf[SRV_MOTOR_FRAME_SIZE],
 
 /**
  * @brief 构建 20 字节广播帧 (head2 + value[8] + crc16)
- * @note  CRC 覆盖 head2 + value（18 字节）
+ * @note  CRC 仅覆盖 value（16 字节），不含 head2
  */
 static void build_bcast_frame(uint8_t buf[SRV_MOTOR_FRAME_SIZE],
     uint16_t head2, const int16_t values[8])
@@ -474,7 +696,7 @@ static void build_bcast_frame(uint8_t buf[SRV_MOTOR_FRAME_SIZE],
         buf[2 + i * 2 + 1] = (uint8_t)(values[i] >> 8);
     }
 
-    uint16_t crc16 = get_CRC16_CCITT_FALSE(buf, 18);
+    uint16_t crc16 = get_CRC16_CCITT_FALSE(&buf[2], 16);
     buf[18] = (uint8_t)crc16;
     buf[19] = (uint8_t)(crc16 >> 8);
 }
@@ -510,60 +732,25 @@ static void build_poll_frame(uint8_t buf[SRV_MOTOR_FRAME_SIZE],
  * ==================================================================== */
 
 /**
- * @brief 发送广播帧（位置或速度）
- *
- * 遍历 motors[] 数组，将各电机 pos_ref 或 spd_ref 填入广播槽位。
- * 调用前已通过 drv_uart_is_tx_busy() 确保 DMA 空闲。
- *
- * @param g     电机组指针
- * @param head2 广播帧类型 (SRV_MOTOR_BC_POS_ID18 / SRV_MOTOR_BC_SPD_ID18)
- */
-static void motor_send_broadcast(srv_motor_group_t* g, uint16_t head2)
-{
-    int16_t values[8] = { 0 };
-
-    for (uint32_t i = 0; i < MOTOR_PER_GROUP; i++) {
-        srv_motor_handle_t* m = g->motors[i];
-        if (m) {
-            values[i] = (head2 == SRV_MOTOR_BC_POS_ID18) ? m->pos_ref : m->spd_ref;
-        }
-    }
-
-    uint8_t frame[SRV_MOTOR_FRAME_SIZE];
-    build_bcast_frame(frame, head2, values);
-
-    drv_uart_channel_t ch = (drv_uart_channel_t)(DRV_UART_CH_1 + (g->uart_idx - 2));
-    drv_uart_send(ch, frame, SRV_MOTOR_FRAME_SIZE);
-}
-
-/**
  * @brief 轮询下一个电机的反馈
  *
  * Round-robin 游标遍历 motors[] 数组，跳过未注册的槽位。
  * 每 POLL_01_INTERVAL 次 INFO_02_R 插入一次 INFO_01_R 查询。
- * 若上一查询未收到回复（query_pending），标记超时并跳过本轮。
  *
  * 调用前已通过 drv_uart_is_tx_busy() 确保 DMA 空闲。
  */
 static void motor_poll_one(srv_motor_group_t* g, drv_uart_channel_t ch)
 {
-    /* 跳过未注册的槽位，找到下一个有效电机 */
-    while (!g->motors[g->poll_cursor])
-        g->poll_cursor = (g->poll_cursor + 1) % MOTOR_PER_GROUP;
+    if (!g->count) return;
 
-    srv_motor_handle_t* tgt = g->motors[g->poll_cursor];
+    /* 找到第 poll_cursor 个已注册电机（0-based compact → 实际 slot） */
+    uint8_t slot = 0;
+    for (uint8_t n = 0; slot < MOTOR_PER_GROUP && n <= g->poll_cursor; slot++)
+        if (g->motors[slot]) n++;
+    slot--; /* 回退到最后匹配的 slot */
+    if (slot >= MOTOR_PER_GROUP || !g->motors[slot]) return;
 
-    /* 上次查询未回复：再试一次，仍无回复则跳过 */
-    if (tgt->query_pending) {
-        if (!tgt->poll_retry) {
-            tgt->poll_retry = true;  /* 再试一次 */
-        } else {
-            tgt->query_pending = false;
-            tgt->poll_retry = false;
-            g->poll_cursor = (g->poll_cursor + 1) % MOTOR_PER_GROUP;
-            return;
-        }
-    }
+    srv_motor_handle_t* tgt = g->motors[slot];
 
     /* 选择查询索引：每 POLL_01_INTERVAL 次插一次 INFO_01_R */
     uint8_t idx = (++g->poll_02_cnt >= POLL_01_INTERVAL)
@@ -574,21 +761,35 @@ static void motor_poll_one(srv_motor_group_t* g, drv_uart_channel_t ch)
     build_poll_frame(frame, tgt->dev_id, idx);
     drv_uart_send(ch, frame, SRV_MOTOR_FRAME_SIZE);
 
-    tgt->query_pending = true;
+    LOG_D("motor", "poll dev=%u idx=%u sent", tgt->dev_id, idx);
     tgt->query_index = idx;
-    g->poll_cursor = (g->poll_cursor + 1) % MOTOR_PER_GROUP;
+    g->poll_cursor = (uint8_t)((g->poll_cursor + 1) % g->count);
 }
 
 /**
- * @brief 从 UART 接收 FIFO 中取出并解析所有 20 字节帧
+ * @brief UART RX 中断回调 — DMA 收到数据后入队（ISR 安全）
+ */
+static void motor_rx_cb(drv_uart_channel_t ch, const uint8_t* data, uint32_t len)
+{
+    srv_motor_group_t* g = (ch == s_grp_a.uart_ch) ? &s_grp_a : &s_grp_b;
+    for (uint32_t off = 0; off + SRV_MOTOR_FRAME_SIZE <= len; off += SRV_MOTOR_FRAME_SIZE)
+        msg_fifo_push(&g->rx_queue, data + off);
+}
+
+/**
+ * @brief 从 msg_fifo 取出所有待解析帧（主循环调用）
  */
 static void motor_drain_rx(srv_motor_group_t* g, drv_uart_channel_t ch)
 {
-    uint8_t rx_buf[SRV_MOTOR_FRAME_SIZE];
-    while (drv_uart_rx_available(ch) >= SRV_MOTOR_FRAME_SIZE) {
-        if (drv_uart_rx_read(ch, rx_buf, SRV_MOTOR_FRAME_SIZE) == SRV_MOTOR_FRAME_SIZE)
-            motor_parse_reply(rx_buf, g);
+    (void)ch;
+    uint32_t count = 0;
+    uint8_t buf[SRV_MOTOR_FRAME_SIZE];
+    while (msg_fifo_pop(&g->rx_queue, buf)) {
+        motor_parse_reply(buf, g);
+        count++;
     }
+    // if (count > 0)
+    //     LOG_D("motor_rx", "grp%u parsed %lu frames", (unsigned)s_grp_idx(g), (unsigned long)count);
 }
 
 /**
@@ -624,15 +825,14 @@ static void motor_parse_reply(const uint8_t frame[SRV_MOTOR_FRAME_SIZE],
     if (!inst)
         return;
 
-    inst->query_pending = false;
-    inst->poll_retry = false;
-
     if (cfg_index == SRV_MOTOR_INDEX_INFO_02_R) {
         inst->fb.d_cur = LE16(frame, 8);
         inst->fb.q_cur = LE16(frame, 10);
         inst->fb.speed_fb = LE16(frame, 12);
         inst->fb.angle_fb = LE16(frame, 14);
         inst->fb.time_fb = millis();
+        LOG_D("motor", "fb dev=%u angle=%d spd=%d q_cur=%d",
+            dev_id, inst->fb.angle_fb, inst->fb.speed_fb, inst->fb.q_cur);
 
     } else if (cfg_index == SRV_MOTOR_INDEX_INFO_01_R) {
         inst->fb.fsm_state = frame[8];
@@ -641,6 +841,9 @@ static void motor_parse_reply(const uint8_t frame[SRV_MOTOR_FRAME_SIZE],
         inst->fb.angle_fb = LE16(frame, 12);
         inst->fb.vbus = LE16(frame, 14);
         inst->fb.time_status = millis();
+        LOG_D("motor", "status dev=%u fsm=%u err=%u temp=%d vbus=%d",
+            dev_id, (unsigned)inst->fb.fsm_state, (unsigned)inst->fb.err_code,
+            inst->fb.temp, inst->fb.vbus);
     }
 }
 
@@ -651,8 +854,9 @@ static void motor_parse_reply(const uint8_t frame[SRV_MOTOR_FRAME_SIZE],
  */
 static srv_motor_group_t* motor_grp_from_fsm(fsm_t* ctx)
 {
-    for (uint32_t i = 0; i < 2; i++)
-        if (&s_grp[i].fsm == ctx)
-            return &s_grp[i];
+    if (&s_grp_a.fsm == ctx)
+        return &s_grp_a;
+    if (&s_grp_b.fsm == ctx)
+        return &s_grp_b;
     return NULL;
 }

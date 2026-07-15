@@ -31,21 +31,29 @@ extern "C" {
  * @brief UART 通道枚举
  */
 typedef enum {
-    DRV_UART_CH_1 = 0, /**< USART1 — PC4(TX) / PC5(RX), 115200 baud（日志串口） */
-    DRV_UART_CH_2,     /**< USART2 — PA2(TX) / PA3(RX), 500000 baud */
-    DRV_UART_CH_3,     /**< USART3 — PB10(TX) / PB11(RX), 500000 baud */
-    DRV_UART_CH_NUM,   /**< 通道总数 */
+    DRV_UART_CH_1 = 0, /**< USART1 — PC4(TX) / PC5(RX), 500000 baud（日志串口） */
+    DRV_UART_CH_2, /**< USART2 — PA2(TX) / PA3(RX), 500000 baud */
+    DRV_UART_CH_3, /**< USART3 — PB10(TX) / PB11(RX), 500000 baud */
+    DRV_UART_CH_NUM, /**< 通道总数 */
 } drv_uart_channel_t;
+
+/**
+ * @brief UART 接收回调函数类型（中断上下文执行）
+ * @param ch     通道号
+ * @param data   数据指针
+ * @param len    数据长度
+ */
+typedef void (*drv_uart_rx_callback_t)(drv_uart_channel_t ch, const uint8_t* data, uint32_t len);
 
 /**
  * @brief UART 驱动错误码
  */
 typedef enum {
-    DRV_UART_OK = 0,                /**< 操作成功 */
-    DRV_UART_ERROR_NULL_PTR,        /**< 空指针错误 */
-    DRV_UART_ERROR_UNINITIALIZED,   /**< 未初始化 */
-    DRV_UART_ERROR_TX_BUSY,         /**< TX DMA 忙 */
-    DRV_UART_ERROR_INVALID_PARAM,   /**< 无效参数 */
+    DRV_UART_OK = 0, /**< 操作成功 */
+    DRV_UART_ERROR_NULL_PTR, /**< 空指针错误 */
+    DRV_UART_ERROR_UNINITIALIZED, /**< 未初始化 */
+    DRV_UART_ERROR_TX_BUSY, /**< TX DMA 忙 */
+    DRV_UART_ERROR_INVALID_PARAM, /**< 无效参数 */
 } drv_uart_error_t;
 
 /* Exported functions prototypes ---------------------------------------------*/
@@ -88,6 +96,28 @@ uint32_t drv_uart_rx_read(drv_uart_channel_t ch, uint8_t* buf, uint32_t max_len)
 
 /** @brief 查询接收 FIFO 中可读字节数 */
 uint32_t drv_uart_rx_available(drv_uart_channel_t ch);
+
+/**
+ * @brief 将 RX DMA 环缓冲中新数据同步到接收 FIFO
+ * @param ch 通道号
+ * @note  由 motor_drain_rx 等消费端主动调用，确保数据不被 IDLE 中断间隔阻塞
+ */
+void drv_uart_sync_rx(drv_uart_channel_t ch);
+
+/**
+ * @brief 注册接收回调（每通道独立注册）
+ * @param ch       通道号
+ * @param callback 回调函数（NULL=取消）
+ * @note  回调在 IDLE 中断上下文中执行，应尽量简短
+ */
+void drv_uart_register_rx_callback(drv_uart_channel_t ch,
+    drv_uart_rx_callback_t callback);
+
+/**
+ * @brief 主循环中检查并重启 RX DMA（回调触发后调用）
+ * @param ch 通道号
+ */
+void drv_uart_rx_restart(drv_uart_channel_t ch);
 
 #ifdef __cplusplus
 }

@@ -9,8 +9,6 @@
 #include "srv_motor_behavior.h"
 
 #include "fsm.h"
-#include "motor_task.h"
-
 #include <string.h>
 
 /* Private constants ---------------------------------------------------------*/
@@ -106,13 +104,13 @@ srv_motor_behavior_error_t srv_motor_behavior_set_setpoint(uint32_t index,
 
 void srv_motor_behavior_enable_all(bool en)
 {
-    for (uint32_t i = 0; i < MOTOR_TOTAL; i++)
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++)
         srv_motor_behavior_enable(i, en);
 }
 
 void srv_motor_behavior_set_all_setpoint(int16_t pos_ref, int16_t spd_ref, int16_t cur_ref)
 {
-    for (uint32_t i = 0; i < MOTOR_TOTAL; i++) {
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
         srv_motor_handle_t* m = srv_motor_get_handle(i);
         if (m) srv_motor_set_setpoint(m, pos_ref, spd_ref, cur_ref);
     }
@@ -165,7 +163,7 @@ static fsm_state_t h_enabling(fsm_t* ctx)
     if (!any_online()) return SRV_MOTOR_BHV_OFFLINE;
     if (any_error())    return SRV_MOTOR_BHV_FAULT;
 
-    for (uint32_t i = 0; i < MOTOR_TOTAL; i++) {
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
         const srv_motor_feedback_t* fb = srv_motor_behavior_get_fb(i);
         if (fb && fb->fsm_state == SRV_MOTOR_FSM_RUN)
             return SRV_MOTOR_BHV_RUNNING;
@@ -179,7 +177,7 @@ static fsm_state_t h_running(fsm_t* ctx)
     if (!any_online()) return SRV_MOTOR_BHV_OFFLINE;
     if (any_error())    return SRV_MOTOR_BHV_FAULT;
 
-    for (uint32_t i = 0; i < MOTOR_TOTAL; i++) {
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
         srv_motor_handle_t* m = srv_motor_get_handle(i);
         const srv_motor_feedback_t* fb = m ? srv_motor_get_feedback(m) : NULL;
         if (fb && fb->fsm_state == SRV_MOTOR_FSM_RUN && m)
@@ -198,7 +196,7 @@ static void on_entry(fsm_t* ctx, fsm_state_t state)
 {
     (void)ctx;
     if (state == SRV_MOTOR_BHV_ENABLING) {
-        for (uint32_t i = 0; i < MOTOR_TOTAL; i++) {
+        for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
             srv_motor_handle_t* m = srv_motor_get_handle(i);
             if (m) srv_motor_enable(m, true);
         }
@@ -209,7 +207,7 @@ static void on_entry(fsm_t* ctx, fsm_state_t state)
 
 static bool any_online(void)
 {
-    for (uint32_t i = 0; i < MOTOR_TOTAL; i++) {
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
         const srv_motor_feedback_t* fb = srv_motor_behavior_get_fb(i);
         if (fb && (fb->time_fb | fb->time_status)) return true;
     }
@@ -218,7 +216,7 @@ static bool any_online(void)
 
 static bool any_error(void)
 {
-    for (uint32_t i = 0; i < MOTOR_TOTAL; i++) {
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
         const srv_motor_feedback_t* fb = srv_motor_behavior_get_fb(i);
         if (fb && fb->err_code != SRV_MOTOR_ERR_NONE) return true;
     }
@@ -227,7 +225,7 @@ static bool any_error(void)
 
 static void disable_all(void)
 {
-    for (uint32_t i = 0; i < MOTOR_TOTAL; i++) {
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
         srv_motor_handle_t* m = srv_motor_get_handle(i);
         if (m) srv_motor_enable(m, false);
     }

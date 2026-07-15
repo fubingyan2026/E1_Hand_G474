@@ -22,8 +22,8 @@
 
 /* Private constants ---------------------------------------------------------*/
 
-#define ENTER_CRITICAL() __disable_irq()
-#define EXIT_CRITICAL() __enable_irq()
+#define ENTER_CRITICAL() //__disable_irq()
+#define EXIT_CRITICAL() //__enable_irq()
 
 /* Private variables ---------------------------------------------------------*/
 

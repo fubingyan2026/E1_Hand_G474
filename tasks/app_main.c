@@ -18,7 +18,7 @@
 #include "led_task.h"
 #include "log_task.h"
 #include "behavior_task.h"
-#include "motor_task.h"
+#include "srv_motor.h"
 #include "sw_timer.h"
 
 int app_main(void)
@@ -38,17 +38,16 @@ int app_main(void)
     /* LED 状态指示 */
     led_task_init();
 
-    /* 电机实时通信（3ms 广播 + 轮询） */
-    motor_task_init();
-
     /* 电机行为控制（10ms FSM + 故障监控） */
     behavior_task_init();
 
     /* 主循环：sw_timer 驱动日志/LED/CAN/FB，motor 全速 poll */
     for (;;) {
+        drv_uart_rx_restart(DRV_UART_CH_1);
+        drv_uart_rx_restart(DRV_UART_CH_2);
         sw_timer_tick(millis());
         sw_timer_task();
-        motor_task_poll();
+        srv_motor_step();
     }
 
     return 0;
