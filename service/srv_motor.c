@@ -28,6 +28,23 @@
 
 #include <string.h>
 
+/* 模块日志开关 ----------------------------------------------------------------*/
+
+/** @brief 本文件日志开关：置 0 屏蔽本文件全部打印 */
+#define MOTOR_LOG_ENABLE 0
+
+#if MOTOR_LOG_ENABLE
+#define MOTOR_LOG_E(...) LOG_E("motor", __VA_ARGS__)
+#define MOTOR_LOG_W(...) LOG_W("motor", __VA_ARGS__)
+#define MOTOR_LOG_I(...) LOG_I("motor", __VA_ARGS__)
+#define MOTOR_LOG_D(...) LOG_D("motor", __VA_ARGS__)
+#else
+#define MOTOR_LOG_E(...) ((void)0)
+#define MOTOR_LOG_W(...) ((void)0)
+#define MOTOR_LOG_I(...) ((void)0)
+#define MOTOR_LOG_D(...) ((void)0)
+#endif
+
 /* Private constants ---------------------------------------------------------*/
 
 /** @brief 每组最大电机数（广播帧 8 槽位） */
@@ -206,13 +223,13 @@ srv_motor_error_t srv_motor_init(void)
     s_grp_a.uart_ch = SRV_MOTOR_GRPA_UART;
     fsm_init(&s_grp_a.fsm, MOTOR_ST_STARTUP, &fsm_cfg);
     msg_fifo_init(&s_grp_a.rx_queue, s_grp_a.rx_qbuf, sizeof(s_grp_a.rx_qbuf), SRV_MOTOR_FRAME_SIZE);
-    LOG_I("motor", "grpA init ok, ch=%u", (unsigned)s_grp_a.uart_ch);
+    MOTOR_LOG_I("grpA init ok, ch=%u", (unsigned)s_grp_a.uart_ch);
 
     memset(&s_grp_b, 0, sizeof(s_grp_b));
     s_grp_b.uart_ch = SRV_MOTOR_GRPB_UART;
     fsm_init(&s_grp_b.fsm, MOTOR_ST_STARTUP, &fsm_cfg);
     msg_fifo_init(&s_grp_b.rx_queue, s_grp_b.rx_qbuf, sizeof(s_grp_b.rx_qbuf), SRV_MOTOR_FRAME_SIZE);
-    LOG_I("motor", "grpB init ok, ch=%u", (unsigned)s_grp_b.uart_ch);
+    MOTOR_LOG_I("grpB init ok, ch=%u", (unsigned)s_grp_b.uart_ch);
 
     s_initialized = true;
 
@@ -238,7 +255,7 @@ srv_motor_error_t srv_motor_init(void)
         }
     }
 
-    LOG_I("motor", "srv_motor init done, %u motors total", SRV_MOTOR_TOTAL);
+    MOTOR_LOG_I("srv_motor init done, %u motors total", SRV_MOTOR_TOTAL);
     return SRV_MOTOR_OK;
 }
 
@@ -251,17 +268,17 @@ void srv_motor_deinit(void)
             s_grp_a.motors[j]->initialized = false;
     }
     memset(&s_grp_a, 0, sizeof(s_grp_a));
-    LOG_I("motor", "grpA deinit ok");
+    MOTOR_LOG_I("grpA deinit ok");
 
     for (uint32_t j = 0; j < MOTOR_PER_GROUP; j++) {
         if (s_grp_b.motors[j])
             s_grp_b.motors[j]->initialized = false;
     }
     memset(&s_grp_b, 0, sizeof(s_grp_b));
-    LOG_I("motor", "grpB deinit ok");
+    MOTOR_LOG_I("grpB deinit ok");
 
     s_initialized = false;
-    LOG_I("motor", "srv_motor deinit all done");
+    MOTOR_LOG_I("srv_motor deinit all done");
 }
 
 /* --- 电机注册 --- */
@@ -285,7 +302,7 @@ srv_motor_error_t srv_motor_register(srv_motor_handle_t* inst,
 
     g->motors[dev_id - 1] = inst;
     g->count++;
-    LOG_I("motor", "reg motor dev=%u ch=%u grp%u total=%u",
+    MOTOR_LOG_I("reg motor dev=%u ch=%u grp%u total=%u",
         dev_id, (unsigned)uart_idx, (unsigned)uart_idx, (unsigned)g->count);
     return SRV_MOTOR_OK;
 }
@@ -300,7 +317,7 @@ void srv_motor_set_setpoint(srv_motor_handle_t* inst,
     inst->pos_ref = pos_ref;
     inst->spd_ref = spd_ref;
     inst->cur_ref = cur_ref;
-    LOG_D("motor", "setpoint dev=%u pos=%d spd=%d cur=%d",
+    MOTOR_LOG_D("setpoint dev=%u pos=%d spd=%d cur=%d",
         inst->dev_id, pos_ref, spd_ref, cur_ref);
 }
 
@@ -310,7 +327,7 @@ void srv_motor_enable(srv_motor_handle_t* inst, bool en)
         return;
 
     inst->en_cmd = en ? SRV_MOTOR_CMD_ENABLE : SRV_MOTOR_CMD_DISABLE;
-    LOG_I("motor", "motor dev=%u %s", inst->dev_id, en ? "ENABLE" : "DISABLE");
+    MOTOR_LOG_I("motor dev=%u %s", inst->dev_id, en ? "ENABLE" : "DISABLE");
 
     srv_motor_group_t* g = s_grp_from_ch(inst->uart_ch);
     uint8_t slot = inst->dev_id - 1;
@@ -324,7 +341,7 @@ void srv_motor_set_current(srv_motor_handle_t* inst, int16_t cur_ref)
     if (inst->cur_ref == cur_ref) return;  /* 未变化，跳过 */
     inst->cur_ref = cur_ref;
     inst->cur_pending = true;
-    LOG_D("motor", "cur limit dev=%u cur=%d", inst->dev_id, cur_ref);
+    MOTOR_LOG_D("cur limit dev=%u cur=%d", inst->dev_id, cur_ref);
 }
 
 srv_motor_handle_t* srv_motor_get_handle(uint32_t index)
@@ -344,7 +361,7 @@ void srv_motor_set_mode(srv_motor_handle_t* inst, srv_motor_ctrl_mode_t mode)
     inst->ctrl_mode = mode;
     srv_motor_group_t* g = s_grp_from_ch(inst->uart_ch);
     g->mode_dirty = true;
-    LOG_I("motor", "dev=%u mode switch to %u", inst->dev_id, mode);
+    MOTOR_LOG_I("dev=%u mode switch to %u", inst->dev_id, mode);
 }
 
 /* --- 零点校准 --- */
@@ -364,7 +381,7 @@ void srv_motor_zero_reset(srv_motor_handle_t* inst)
     build_std_frame(frame, SRV_MOTOR_CAN_ID_CONFIG, data);
     drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
 
-    LOG_I("motor", "dev=%u zero reset sent", inst->dev_id);
+    MOTOR_LOG_I("dev=%u zero reset sent", inst->dev_id);
 }
 
 void srv_motor_zero_reset_all(drv_uart_channel_t ch)
@@ -382,7 +399,7 @@ void srv_motor_zero_reset_all(drv_uart_channel_t ch)
         }
     }
 
-    LOG_I("motor", "zero reset ALL on ch=%u", (unsigned)ch);
+    MOTOR_LOG_I("zero reset ALL on ch=%u", (unsigned)ch);
 }
 
 /* --- 反馈接口 --- */
@@ -463,7 +480,7 @@ static fsm_state_t fsm_startup(fsm_t* ctx)
             build_std_frame(f, g->motors[g->startup_motor]->dev_id, data);
             drv_uart_send(g->uart_ch, f, 20);
             g->enable_time = millis();
-            LOG_I("motor", "grp%u ENABLE dev=%u (%u/%u)",
+            MOTOR_LOG_I("grp%u ENABLE dev=%u (%u/%u)",
                 (unsigned)s_grp_idx(g), g->motors[g->startup_motor]->dev_id,
                 (unsigned)(g->startup_motor + 1), (unsigned)g->count);
             g->startup_motor++;
@@ -483,7 +500,7 @@ static fsm_state_t fsm_startup(fsm_t* ctx)
                 g->startup_motor++;
 
             if (g->startup_motor >= MOTOR_PER_GROUP) {
-                LOG_I("motor", "grp%u startup done, entering run",
+                MOTOR_LOG_I("grp%u startup done, entering run",
                     (unsigned)s_grp_idx(g));
                 g->cycle_start = millis();
                 return MOTOR_ST_IDLE;
@@ -495,7 +512,7 @@ static fsm_state_t fsm_startup(fsm_t* ctx)
             uint8_t f[20];
             build_std_frame(f, SRV_MOTOR_CAN_ID_CONFIG, data);
             drv_uart_send(g->uart_ch, f, 20);
-            LOG_I("motor", "grp%u SET_MODE dev=%u (%u/%u)",
+            MOTOR_LOG_I("grp%u SET_MODE dev=%u (%u/%u)",
                 (unsigned)s_grp_idx(g), g->motors[g->startup_motor]->dev_id,
                 (unsigned)(g->startup_motor + 1), (unsigned)g->count);
             g->startup_motor++;
@@ -529,7 +546,7 @@ static fsm_state_t fsm_bcast_en(fsm_t* ctx)
                 }
             }
             g->mode_dirty = false;
-            LOG_D("motor", "grp%u mode cfg sent", (unsigned)s_grp_idx(g));
+            MOTOR_LOG_D("grp%u mode cfg sent", (unsigned)s_grp_idx(g));
         }
         return MOTOR_ST_BCAST_EN; /* 暂不退：下轮取 en_dirty */
     }
@@ -543,7 +560,7 @@ static fsm_state_t fsm_bcast_en(fsm_t* ctx)
         build_enable_frame(frame, g->en_states);
         drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
         g->en_dirty = false;
-        LOG_D("motor", "grp%u en bcast sent", (unsigned)s_grp_idx(g));
+        MOTOR_LOG_D("grp%u en bcast sent", (unsigned)s_grp_idx(g));
         return MOTOR_ST_BCAST_POS;
     }
     return MOTOR_ST_BCAST_EN; /* DMA 忙，等待 */
@@ -579,7 +596,7 @@ static fsm_state_t fsm_poll(fsm_t* ctx)
 
     if (!drv_uart_is_tx_busy(g->uart_ch)) {
         motor_poll_one(g, g->uart_ch);
-        LOG_D("motor", "grp%u poll ok", (unsigned)s_grp_idx(g));
+        MOTOR_LOG_D("grp%u poll ok", (unsigned)s_grp_idx(g));
         return MOTOR_ST_BCAST_CUR;
     }
     return MOTOR_ST_POLL;
@@ -593,7 +610,7 @@ static fsm_state_t fsm_idle(fsm_t* ctx)
     srv_motor_group_t* g = motor_grp_from_fsm(ctx);
     if (millis() - g->cycle_start >= MOTOR_BCAST_PERIOD_MS) {
         g->cycle_start = millis();
-        LOG_D("motor", "grp%u tick, start bcast seq", (unsigned)s_grp_idx(g));
+        MOTOR_LOG_D("grp%u tick, start bcast seq", (unsigned)s_grp_idx(g));
         return MOTOR_ST_BCAST_EN; /* 优先检查使能广播 */
     }
     return MOTOR_ST_IDLE;
@@ -620,7 +637,7 @@ static fsm_state_t fsm_bcast_cur(fsm_t* ctx)
         uint8_t frame[SRV_MOTOR_FRAME_SIZE];
         build_std_frame(frame, SRV_MOTOR_CAN_ID_CONFIG, data);
         drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
-        LOG_I("motor", "cfg MAX_CUR dev=%u val=%d", m->dev_id, m->cur_ref);
+        MOTOR_LOG_I("cfg MAX_CUR dev=%u val=%d", m->dev_id, m->cur_ref);
         return MOTOR_ST_BCAST_LIM;
     }
     return MOTOR_ST_BCAST_CUR;
@@ -646,7 +663,7 @@ static fsm_state_t fsm_bcast_lim(fsm_t* ctx)
         uint8_t frame[SRV_MOTOR_FRAME_SIZE];
         build_std_frame(frame, SRV_MOTOR_CAN_ID_CONFIG, data);
         drv_uart_send(g->uart_ch, frame, SRV_MOTOR_FRAME_SIZE);
-        LOG_I("motor", "cfg SPD_LIMIT dev=%u val=%d", m->dev_id, m->spd_ref);
+        MOTOR_LOG_I("cfg SPD_LIMIT dev=%u val=%d", m->dev_id, m->spd_ref);
         g->cur_cursor = (uint8_t)((g->cur_cursor + 1) % g->count);
         return MOTOR_ST_IDLE;
     }
@@ -762,7 +779,7 @@ static void motor_poll_one(srv_motor_group_t* g, drv_uart_channel_t ch)
     build_poll_frame(frame, tgt->dev_id, idx);
     drv_uart_send(ch, frame, SRV_MOTOR_FRAME_SIZE);
 
-    LOG_D("motor", "poll dev=%u idx=%u sent", tgt->dev_id, idx);
+    MOTOR_LOG_D("poll dev=%u idx=%u sent", tgt->dev_id, idx);
     tgt->query_index = idx;
     g->poll_cursor = (uint8_t)((g->poll_cursor + 1) % g->count);
 }
@@ -790,7 +807,7 @@ static void motor_drain_rx(srv_motor_group_t* g, drv_uart_channel_t ch)
         count++;
     }
     // if (count > 0)
-    //     LOG_D("motor_rx", "grp%u parsed %lu frames", (unsigned)s_grp_idx(g), (unsigned long)count);
+    //     MOTOR_LOG_D("grp%u parsed %lu frames", (unsigned)s_grp_idx(g), (unsigned long)count);
 }
 
 /**
@@ -832,7 +849,7 @@ static void motor_parse_reply(const uint8_t frame[SRV_MOTOR_FRAME_SIZE],
         inst->fb.speed_fb = LE16(frame, 12);
         inst->fb.angle_fb = LE16(frame, 14);
         inst->fb.time_fb = millis();
-        LOG_D("motor", "fb dev=%u angle=%d spd=%d q_cur=%d",
+        MOTOR_LOG_D("fb dev=%u angle=%d spd=%d q_cur=%d",
             dev_id, inst->fb.angle_fb, inst->fb.speed_fb, inst->fb.q_cur);
 
     } else if (cfg_index == SRV_MOTOR_INDEX_INFO_01_R) {
@@ -842,7 +859,7 @@ static void motor_parse_reply(const uint8_t frame[SRV_MOTOR_FRAME_SIZE],
         inst->fb.angle_fb = LE16(frame, 12);
         inst->fb.vbus = LE16(frame, 14);
         inst->fb.time_status = millis();
-        LOG_D("motor", "status dev=%u fsm=%u err=%u temp=%d vbus=%d",
+        MOTOR_LOG_D("status dev=%u fsm=%u err=%u temp=%d vbus=%d",
             dev_id, (unsigned)inst->fb.fsm_state, (unsigned)inst->fb.err_code,
             inst->fb.temp, inst->fb.vbus);
     }

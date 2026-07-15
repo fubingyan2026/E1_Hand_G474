@@ -8,11 +8,13 @@
  *
  * 多实例驱动：内部句柄 + DMA 配置表，drv_uart_init() 无需传参。
  * TX：DMA normal，gState + s_tx_busy 双状态检忙。
- * RX：DMA normal 模式 ping-pong 双缓冲 —— 收满中断内先切换缓冲并立即重启
- *     DMA（微秒级窗口，抑制 ORE），再解析已收满的旧缓冲；主循环
+ * RX：DMA normal + IDLE 事件 (ReceiveToIdle) + ping-pong 双缓冲 ——
+ *     总线空闲即按实际长度上抛（天然帧分块，错位自愈），事件中断内先切换
+ *     缓冲并立即重启 DMA（微秒级窗口，抑制 ORE），再上抛旧缓冲；主循环
  *     drv_uart_rx_restart() 仅作重启失败时的兜底。
  *
- * HAL 回调 (HAL_UART_TxCpltCallback / HAL_UART_RxCpltCallback) 集中在此文件。
+ * HAL 回调 (HAL_UART_TxCpltCallback / HAL_UARTEx_RxEventCallback /
+ * HAL_UART_ErrorCallback) 集中在此文件。
  */
 
 /* Includes ------------------------------------------------------------------*/
@@ -23,13 +25,33 @@
 
 #include <string.h>
 
+/* 模块日志开关 ----------------------------------------------------------------*/
+
+/** @brief 本文件日志开关：置 0 屏蔽本文件全部打印 */
+#define UART_LOG_ENABLE 1
+
+#if UART_LOG_ENABLE
+#define UART_LOG_E(...) LOG_E("drv_uart", __VA_ARGS__)
+#define UART_LOG_W(...) LOG_W("drv_uart", __VA_ARGS__)
+#define UART_LOG_I(...) LOG_I("drv_uart", __VA_ARGS__)
+#define UART_LOG_D(...) LOG_D("drv_uart", __VA_ARGS__)
+#else
+#define UART_LOG_E(...) ((void)0)
+#define UART_LOG_W(...) ((void)0)
+#define UART_LOG_I(...) ((void)0)
+#define UART_LOG_D(...) ((void)0)
+#endif
+
 /* Private constants ---------------------------------------------------------*/
 
-/** @brief RX DMA 单次接收字节数（256 = ~11ms，减少重启频次） */
-#define DRV_UART_RX_BUF_SIZE (20U*1)
+/** @brief RX DMA 单缓冲字节数（IDLE 事件分帧，需容纳两次空闲间隙之间的最大突发） */
+#define DRV_UART_RX_BUF_SIZE (64U)
 
 /** @brief TX 最大单次发送量 */
 #define DRV_UART_TX_BUF_SIZE (256U)
+
+/** @brief 错误日志聚合窗口 (ms)：窗口内的错误只在首次打印，附累计次数 */
+#define DRV_UART_ERR_LOG_PERIOD_MS (1000U)
 
 /* Private types -------------------------------------------------------------*/
 
@@ -42,6 +64,9 @@ typedef struct {
     volatile bool       rx_need_restart; /**< ISR 内重启失败时主循环兜底重启 */
     bool                initialized;    /**< 初始化标志 */
     drv_uart_rx_callback_t rx_callback; /**< 接收回调（中断中执行） */
+    uint32_t            err_count;      /**< 日志聚合窗口内错误累计次数 */
+    uint32_t            err_flags;      /**< 日志聚合窗口内错误标志并集 */
+    uint32_t            err_last_log;   /**< 上次错误日志时间戳 (ms) */
 } drv_uart_inst_t;
 
 /* Private variables ---------------------------------------------------------*/
@@ -69,13 +94,22 @@ static void drv_uart_rx_flush_errors(UART_HandleTypeDef* huart)
 
 /**
  * @brief 启动/重启 RX DMA 到当前活动缓冲（ISR 与主循环共用）
+ * @note  IDLE 事件模式：总线空闲即上报本次已收长度并重启，天然按帧分块，
+ *        错位/坏字节在下一个空闲间隙后自动重新对齐。HT 中断关闭
+ *        （半满事件无意义，只等 IDLE/TC）。
  * @return true=启动成功；false=HAL 句柄忙等，需主循环兜底重试
  */
 static bool drv_uart_rx_start(drv_uart_inst_t* inst)
 {
     drv_uart_rx_flush_errors(inst->huart);
-    return HAL_UART_Receive_DMA(inst->huart,
-               inst->rx_buf[inst->rx_buf_idx], DRV_UART_RX_BUF_SIZE) == HAL_OK;
+    if (HAL_UARTEx_ReceiveToIdle_DMA(inst->huart,
+            inst->rx_buf[inst->rx_buf_idx], DRV_UART_RX_BUF_SIZE)
+        != HAL_OK) {
+        return false;
+    }
+    /* 关闭 DMA 半满中断：分帧只依赖 IDLE/TC 事件 */
+    __HAL_DMA_DISABLE_IT(inst->huart->hdmarx, DMA_IT_HT);
+    return true;
 }
 
 /* Exported functions --------------------------------------------------------*/
@@ -214,12 +248,19 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart)
 }
 
 /**
- * @brief UART RX DMA 完成回调 — ping-pong 切换缓冲后立即重启，再解析旧缓冲
- * @note  先重启后解析：把接收停止窗口从「ISR 解析 256B + 主循环延迟」
- *        压缩到微秒级，500 kbps 下需 2 字节 (40µs) 才会 ORE，窗口足够安全。
+ * @brief UART RX 事件回调（IDLE/TC）— ping-pong 切换缓冲后立即重启，再上抛数据
+ * @note  IDLE：总线空闲，本次突发结束，Size = 实际已收字节数（HAL 已结束本次接收）；
+ *        TC：缓冲收满（Size = 缓冲大小）。两者都已停止接收，需立即重启。
+ *        HT 事件已在启动时关闭中断，此处再按事件类型兜底过滤（HT 时接收仍在进行）。
+ *        先重启后上抛：接收停止窗口压缩到微秒级，抑制 ORE。
  */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef* huart)
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef* huart, uint16_t Size)
 {
+    /* HT 事件：接收仍在进行，不处理（正常已关闭 HT 中断，双保险） */
+    if (HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_HT) {
+        return;
+    }
+
     for (uint32_t ch = 0; ch < DRV_UART_CH_NUM; ch++) {
         if (s_inst[ch].initialized && s_inst[ch].huart == huart) {
             drv_uart_inst_t* inst = &s_inst[ch];
@@ -231,9 +272,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef* huart)
                 inst->rx_need_restart = true; /* 句柄忙（主循环正在启动 TX 等），主循环兜底 */
             }
 
-            /* 2. 解析已收满的旧缓冲（此期间 DMA 已在填充新缓冲） */
-            if (inst->rx_callback) {
-                inst->rx_callback((drv_uart_channel_t)ch, done_buf, DRV_UART_RX_BUF_SIZE);
+            /* 2. 上抛本次空闲间隙前收到的数据（此期间 DMA 已在填充新缓冲） */
+            if (Size > 0 && inst->rx_callback) {
+                inst->rx_callback((drv_uart_channel_t)ch, done_buf, Size);
             }
             return;
         }
@@ -241,9 +282,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef* huart)
 }
 
 /**
- * @brief UART 错误回调 — 打印错误原因，立即重启接收
+ * @brief UART 错误回调 — 限频打印错误原因，立即重启接收
  * @note  DMA 接收模式下 HAL 将 ORE/FE/NE 等按阻塞错误处理并中止 RX DMA，
  *        必须立即重启否则接收永久停止；活动缓冲数据可能已被污染，丢弃。
+ *        总线异常（如电机被拔）时错误可达数百次/秒，日志按
+ *        DRV_UART_ERR_LOG_PERIOD_MS 窗口聚合，打印窗口内累计次数与错误类型并集。
  */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
 {
@@ -255,14 +298,25 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
             continue;
         }
 
-        LOG_E("drv_uart", "ch%u err=0x%02lX%s%s%s%s%s%s",
-            (unsigned)ch + 1U, (unsigned long)err,
-            (err & HAL_UART_ERROR_PE) ? " PE(parity)" : "",
-            (err & HAL_UART_ERROR_NE) ? " NE(noise)" : "",
-            (err & HAL_UART_ERROR_FE) ? " FE(frame)" : "",
-            (err & HAL_UART_ERROR_ORE) ? " ORE(overrun)" : "",
-            (err & HAL_UART_ERROR_DMA) ? " DMA(transfer)" : "",
-            (err & HAL_UART_ERROR_RTO) ? " RTO(timeout)" : "");
+        /* 窗口内聚合：累计次数 + 错误标志并集 */
+        inst->err_count++;
+        inst->err_flags |= err;
+
+        uint32_t now = HAL_GetTick();
+        if (now - inst->err_last_log >= DRV_UART_ERR_LOG_PERIOD_MS) {
+            uint32_t flags = inst->err_flags;
+            UART_LOG_E("ch%u err=0x%02lX x%lu%s%s%s%s%s%s",
+                (unsigned)ch + 1U, (unsigned long)flags, (unsigned long)inst->err_count,
+                (flags & HAL_UART_ERROR_PE) ? " PE(parity)" : "",
+                (flags & HAL_UART_ERROR_NE) ? " NE(noise)" : "",
+                (flags & HAL_UART_ERROR_FE) ? " FE(frame)" : "",
+                (flags & HAL_UART_ERROR_ORE) ? " ORE(overrun)" : "",
+                (flags & HAL_UART_ERROR_DMA) ? " DMA(transfer)" : "",
+                (flags & HAL_UART_ERROR_RTO) ? " RTO(timeout)" : "");
+            inst->err_last_log = now;
+            inst->err_count = 0;
+            inst->err_flags = 0;
+        }
 
         /* RX DMA 已被 HAL 中止，原地立即重启（rx_start 内部先清错误标志） */
         if (!drv_uart_rx_start(inst)) {
@@ -288,6 +342,7 @@ void drv_uart_rx_restart(drv_uart_channel_t ch)
     if (inst->rx_need_restart) {
         if (drv_uart_rx_start(inst)) {
             inst->rx_need_restart = false;
+            UART_LOG_I("receive restart.");
         }
     }
 }

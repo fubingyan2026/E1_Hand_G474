@@ -21,6 +21,23 @@
 
 #include <string.h>
 
+/* 模块日志开关 ----------------------------------------------------------------*/
+
+/** @brief 本文件日志开关：置 0 屏蔽本文件全部打印 */
+#define FLASH_LOG_ENABLE 1
+
+#if FLASH_LOG_ENABLE
+#define FLASH_LOG_E(...) LOG_E("flash", __VA_ARGS__)
+#define FLASH_LOG_W(...) LOG_W("flash", __VA_ARGS__)
+#define FLASH_LOG_I(...) LOG_I("flash", __VA_ARGS__)
+#define FLASH_LOG_D(...) LOG_D("flash", __VA_ARGS__)
+#else
+#define FLASH_LOG_E(...) ((void)0)
+#define FLASH_LOG_W(...) ((void)0)
+#define FLASH_LOG_I(...) ((void)0)
+#define FLASH_LOG_D(...) ((void)0)
+#endif
+
 /* Private constants ---------------------------------------------------------*/
 
 /** @brief 断言：失效时停中断并死循环 */
@@ -98,14 +115,14 @@ void drv_flash_init(void)
         /* 单 Bank 模式: 4KB 页, 总 Flash 128KB */
         s_cached_page_size = 0x1000U;
         s_cached_bank_size = 0x20000U; /* 128 KB, 单个 Bank=整个 Flash */
-        LOG_I("flash", "Init: 单 Bank 模式, 页=%luKB, Bank=%luKB",
+        FLASH_LOG_I("Init: 单 Bank 模式, 页=%luKB, Bank=%luKB",
             (unsigned long)(s_cached_page_size >> 10),
             (unsigned long)(s_cached_bank_size >> 10));
     } else {
         /* 双 Bank 模式: 2KB 页, 每 Bank 64KB */
         s_cached_page_size = 0x800U;
         s_cached_bank_size = 0x10000U; /* 64 KB, 单个 Bank */
-        LOG_I("flash", "Init: 双 Bank 模式, 页=%luKB, Bank=%luKB",
+        FLASH_LOG_I("Init: 双 Bank 模式, 页=%luKB, Bank=%luKB",
             (unsigned long)(s_cached_page_size >> 10),
             (unsigned long)(s_cached_bank_size >> 10));
     }
@@ -132,7 +149,7 @@ drv_flash_error_t drv_flash_erase(uint32_t addr, size_t size)
     DRV_FLASH_ASSERT(addr % page_size == 0);
     DRV_FLASH_ASSERT(size % page_size == 0);
 
-    LOG_I("flash", "Erase: addr=0x%08lX, size=%lu, page_size=%lu",
+    FLASH_LOG_I("Erase: addr=0x%08lX, size=%lu, page_size=%lu",
         (unsigned long)addr, (unsigned long)size,
         (unsigned long)page_size);
 
@@ -164,7 +181,7 @@ drv_flash_error_t drv_flash_erase(uint32_t addr, size_t size)
 
         uint32_t page = (current_addr - bank_base) / page_size;
 
-        LOG_I("flash", "Erase chunk: bank=%lu, page=%lu, nb=%lu",
+        FLASH_LOG_I("Erase chunk: bank=%lu, page=%lu, nb=%lu",
             (unsigned long)bank, (unsigned long)page,
             (unsigned long)chunk_pages);
 
@@ -176,7 +193,7 @@ drv_flash_error_t drv_flash_erase(uint32_t addr, size_t size)
         };
 
         if (HAL_FLASHEx_Erase(&erase_init, &error) != HAL_OK) {
-            LOG_E("flash", "Erase err: addr=0x%08lX bank=%lu page=%lu HAL_Err=0x%08lX",
+            FLASH_LOG_E("Erase err: addr=0x%08lX bank=%lu page=%lu HAL_Err=0x%08lX",
                 (unsigned long)current_addr, (unsigned long)bank,
                 (unsigned long)page, (unsigned long)HAL_FLASH_GetError());
             result = DRV_FLASH_ERASE_ERR;
@@ -213,7 +230,7 @@ drv_flash_error_t drv_flash_write(uint32_t addr, const uint32_t* buf, size_t siz
     drv_flash_error_t result = DRV_FLASH_OK;
     const uint8_t* src = (const uint8_t*)buf;
 
-    LOG_I("flash", "Write: addr=0x%08lX, size=%lu",
+    FLASH_LOG_I("Write: addr=0x%08lX, size=%lu",
         (unsigned long)addr, (unsigned long)size);
 
     drv_flash_env_lock();
@@ -238,7 +255,7 @@ drv_flash_error_t drv_flash_write(uint32_t addr, const uint32_t* buf, size_t siz
             /* 使用HAL库进行双字编程，确保正确的时序和错误处理 */
             if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr, s_write_buf) != HAL_OK) {
                 uint32_t error = HAL_FLASH_GetError();
-                LOG_E("flash", "Flash 编程错误: i=%u, addr=0x%08lX, HAL_Error=0x%08lX",
+                FLASH_LOG_E("Flash 编程错误: i=%u, addr=0x%08lX, HAL_Error=0x%08lX",
                     (unsigned)i, addr, (unsigned long)error);
                 result = DRV_FLASH_WRITE_ERR;
                 goto exit_write;
@@ -249,7 +266,7 @@ drv_flash_error_t drv_flash_write(uint32_t addr, const uint32_t* buf, size_t siz
         s_read_buf = *(volatile uint64_t*)addr;
         /* 直接与对齐过的 s_write_buf 进行比对，避免在未对齐的 src 上执行 64-bit 指针转换 */
         if (s_read_buf != s_write_buf) {
-            LOG_E("flash", "Flash 读回不匹配: i=%u, addr=0x%08lX, "
+            FLASH_LOG_E("Flash 读回不匹配: i=%u, addr=0x%08lX, "
                            "written=0x%016llX, readback=0x%016llX",
                 (unsigned)i, addr,
                 (unsigned long long)s_write_buf,

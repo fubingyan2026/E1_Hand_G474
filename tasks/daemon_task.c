@@ -25,6 +25,23 @@
 #include "srv_motor.h"
 #include "sw_timer.h"
 
+/* 模块日志开关 ----------------------------------------------------------------*/
+
+/** @brief 本文件日志开关：置 0 屏蔽本文件全部打印 */
+#define DAEMON_LOG_ENABLE 1
+
+#if DAEMON_LOG_ENABLE
+#define DAEMON_LOG_E(...) LOG_E("daemon", __VA_ARGS__)
+#define DAEMON_LOG_W(...) LOG_W("daemon", __VA_ARGS__)
+#define DAEMON_LOG_I(...) LOG_I("daemon", __VA_ARGS__)
+#define DAEMON_LOG_D(...) LOG_D("daemon", __VA_ARGS__)
+#else
+#define DAEMON_LOG_E(...) ((void)0)
+#define DAEMON_LOG_W(...) ((void)0)
+#define DAEMON_LOG_I(...) ((void)0)
+#define DAEMON_LOG_D(...) ((void)0)
+#endif
+
 /* Private constants ---------------------------------------------------------*/
 
 /** @brief 检查/派发周期 */
@@ -73,7 +90,7 @@ void daemon_task_init(void)
     /* daemon 中间件首个使用者，负责初始化（ms 时基 = millis） */
     daemon_error_t err = daemon_init(millis);
     if (DAEMON_IS_ERR(err)) {
-        LOG_E("daemon", "daemon_init failed: %d", (int)err);
+        DAEMON_LOG_E("daemon_init failed: %d", (int)err);
         return;
     }
 
@@ -93,7 +110,7 @@ void daemon_task_init(void)
 
         err = daemon_register_static(&cfg, &mon->ctx);
         if (DAEMON_IS_ERR(err)) {
-            LOG_E("daemon", "register %s failed: %d", s_names[i], (int)err);
+            DAEMON_LOG_E("register %s failed: %d", s_names[i], (int)err);
         }
     }
 
@@ -103,7 +120,7 @@ void daemon_task_init(void)
     });
     sw_timer_start(&s_timer, DAEMON_TASK_PERIOD_MS, 0);
 
-    LOG_I("daemon", "daemon task init ok, %u motors monitored", (unsigned)daemon_get_count());
+    DAEMON_LOG_I("daemon task init ok, %u motors monitored", (unsigned)daemon_get_count());
 }
 
 /* Private functions ---------------------------------------------------------*/
@@ -119,9 +136,9 @@ static void motor_offline_cb(void* owner_ptr)
     }
 
     if (daemon_is_online(&mon->ctx)) {
-        LOG_I("daemon", "%s back online", daemon_get_name(&mon->ctx));
+        DAEMON_LOG_I("%s back online", daemon_get_name(&mon->ctx));
     } else {
-        LOG_W("daemon", "%s OFFLINE (fb timeout > %ums)",
+        DAEMON_LOG_W("%s OFFLINE (fb timeout > %ums)",
             daemon_get_name(&mon->ctx), (unsigned)MOTOR_FEED_TIMEOUT_MS);
     }
 }
