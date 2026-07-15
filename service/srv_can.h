@@ -38,14 +38,14 @@ extern "C" {
 #endif
 
 /** @brief CAN ID 定义 */
-#define SRV_CAN_ID_CTRL      0x100  /**< 控制帧 (Host→Device) */
-#define SRV_CAN_ID_FEEDBACK  0x101  /**< 高频反馈 (角度/速度/Q电流) */
-#define SRV_CAN_ID_STATUS    0x102  /**< 低频状态 (错误/温度/电压) */
+#define SRV_CAN_ID_CTRL 0x100 /**< 控制帧 (Host→Device) */
+#define SRV_CAN_ID_FEEDBACK 0x101 /**< 高频反馈 (角度/速度/Q电流) */
+#define SRV_CAN_ID_STATUS 0x102 /**< 低频状态 (错误/温度/电压) */
 
 /** @brief 帧长度（CAN FD DLC 编码: 0-8,12,16,20,24,32,48,64） */
-#define SRV_CAN_CTRL_LEN     64U   /**< 55B 数据 + 9B 保留 */
-#define SRV_CAN_FB_LEN       64U   /**< 64B 恰好填满 */
-#define SRV_CAN_STATUS_LEN   48U   /**< 46B 数据 + 2B 保留 */
+#define SRV_CAN_CTRL_LEN 64U /**< 55B 数据 + 9B 保留 */
+#define SRV_CAN_FB_LEN 64U /**< 64B 恰好填满 */
+#define SRV_CAN_STATUS_LEN 48U /**< 46B 数据 + 2B 保留 */
 
 /* API -----------------------------------------------------------------------*/
 

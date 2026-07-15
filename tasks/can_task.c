@@ -17,9 +17,9 @@
 
 /* Private constants ---------------------------------------------------------*/
 
-#define TASK_PERIOD_MS      10U
-#define FB_INTERVAL_MS       100U
-#define STATUS_INTERVAL_MS   500U
+#define TASK_PERIOD_MS 10U
+#define FB_INTERVAL_MS 100U
+#define STATUS_INTERVAL_MS 500U
 
 /* Private variables ---------------------------------------------------------*/
 

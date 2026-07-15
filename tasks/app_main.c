@@ -12,13 +12,13 @@
  * 初始化硬件后进入主循环，运行 sw_timer 协作式调度。
  */
 
+#include "behavior_task.h"
 #include "can_task.h"
 #include "daemon_task.h"
 #include "drv_systick.h"
 #include "drv_uart.h"
 #include "led_task.h"
 #include "log_task.h"
-#include "behavior_task.h"
 #include "srv_motor.h"
 #include "sw_timer.h"
 

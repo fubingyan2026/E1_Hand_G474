@@ -66,13 +66,7 @@ typedef struct {
 
 /* Private variables ---------------------------------------------------------*/
 
-/** @brief 电机守护进程名称（daemon 浅拷贝 config，字符串必须持久） */
-static const char* const s_names[SRV_MOTOR_TOTAL] = {
-    "motorA1", "motorA2", "motorA3", "motorA4", "motorA5",
-    "motorB1", "motorB2", "motorB3", "motorB4",
-};
-
-/** @brief 9 电机监控项 */
+/** @brief 9 电机监控项（守护名由 srv_motor_get_name() 提供，单一来源） */
 motor_monitor_t s_mon[SRV_MOTOR_TOTAL];
 
 /** @brief 任务定时器 */
@@ -101,7 +95,7 @@ void daemon_task_init(void)
         mon->last_fb_stamp = 0;
 
         daemon_config_t cfg = {
-            .name = s_names[i],
+            .name = srv_motor_get_name(i),
             .owner_ptr = mon,
             .offline_cb = motor_offline_cb,
             .reload_timeout_ms = MOTOR_FEED_TIMEOUT_MS,
@@ -110,14 +104,14 @@ void daemon_task_init(void)
 
         err = daemon_register_static(&cfg, &mon->ctx);
         if (DAEMON_IS_ERR(err)) {
-            DAEMON_LOG_E("register %s failed: %d", s_names[i], (int)err);
+            DAEMON_LOG_E("register %s failed: %d", srv_motor_get_name(i), (int)err);
         }
     }
 
     sw_timer_init(&s_timer, &(sw_timer_config_t) {
-        .priority = SW_TIMER_PRIO_NORMAL,
-        .callback = daemon_timer_cb,
-    });
+                                .priority = SW_TIMER_PRIO_NORMAL,
+                                .callback = daemon_timer_cb,
+                            });
     sw_timer_start(&s_timer, DAEMON_TASK_PERIOD_MS, 0);
 
     DAEMON_LOG_I("daemon task init ok, %u motors monitored", (unsigned)daemon_get_count());

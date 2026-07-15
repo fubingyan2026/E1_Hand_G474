@@ -320,6 +320,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
 
         /* RX DMA 已被 HAL 中止，原地立即重启（rx_start 内部先清错误标志） */
         if (!drv_uart_rx_start(inst)) {
+            UART_LOG_I("rx err and receive restart.");
             inst->rx_need_restart = true;
         }
 

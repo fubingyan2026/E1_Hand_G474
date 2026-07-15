@@ -18,14 +18,14 @@
 #define LED_TASK_REFRESH_PERIOD_MS (10U)
 
 /** @brief 蓝色 LED 呼吸参数 */
-#define LED_BLUE_BREATH_CYCLE_MS  (2000U)
-#define LED_BLUE_BREATH_MIN_DUTY  (0U)
-#define LED_BLUE_BREATH_MAX_DUTY  (1023U)
+#define LED_BLUE_BREATH_CYCLE_MS (2000U)
+#define LED_BLUE_BREATH_MIN_DUTY (0U)
+#define LED_BLUE_BREATH_MAX_DUTY (1023U)
 
 /** @brief 红色 LED 呼吸参数 */
-#define LED_RED_BREATH_CYCLE_MS   (3000U)
-#define LED_RED_BREATH_MIN_DUTY   (0U)
-#define LED_RED_BREATH_MAX_DUTY   (1023U)
+#define LED_RED_BREATH_CYCLE_MS (3000U)
+#define LED_RED_BREATH_MIN_DUTY (0U)
+#define LED_RED_BREATH_MAX_DUTY (1023U)
 
 static srv_led_handle_t s_led_blue;
 static srv_led_handle_t s_led_red;
@@ -59,30 +59,30 @@ void led_task_init(void)
 
     /* ── 蓝色 LED: 呼吸模式 ── */
     srv_led_config_t cfg_blue = {
-        .name             = "blue",
-        .init_state       = SRV_LED_STATE_BREATHING,
-        .write_pin        = led_blue_write_pin,
-        .breath_cycle_ms  = LED_BLUE_BREATH_CYCLE_MS,
-        .breath_min_duty  = LED_BLUE_BREATH_MIN_DUTY,
-        .breath_max_duty  = LED_BLUE_BREATH_MAX_DUTY,
+        .name = "blue",
+        .init_state = SRV_LED_STATE_BREATHING,
+        .write_pin = led_blue_write_pin,
+        .breath_cycle_ms = LED_BLUE_BREATH_CYCLE_MS,
+        .breath_min_duty = LED_BLUE_BREATH_MIN_DUTY,
+        .breath_max_duty = LED_BLUE_BREATH_MAX_DUTY,
     };
     srv_led_register_static(&cfg_blue, &s_led_blue);
 
     /* ── 红色 LED: 呼吸模式 ── */
     srv_led_config_t cfg_red = {
-        .name             = "red",
-        .init_state       = SRV_LED_STATE_BREATHING,
-        .write_pin        = led_red_write_pin,
-        .breath_cycle_ms  = LED_RED_BREATH_CYCLE_MS,
-        .breath_min_duty  = LED_RED_BREATH_MIN_DUTY,
-        .breath_max_duty  = LED_RED_BREATH_MAX_DUTY,
+        .name = "red",
+        .init_state = SRV_LED_STATE_BREATHING,
+        .write_pin = led_red_write_pin,
+        .breath_cycle_ms = LED_RED_BREATH_CYCLE_MS,
+        .breath_min_duty = LED_RED_BREATH_MIN_DUTY,
+        .breath_max_duty = LED_RED_BREATH_MAX_DUTY,
     };
     srv_led_register_static(&cfg_red, &s_led_red);
 
     /* 启动 sw_timer 驱动 LED FSM */
     const sw_timer_config_t timer_cfg = {
-        .priority  = SW_TIMER_PRIO_NORMAL,
-        .callback  = led_timer_cb,
+        .priority = SW_TIMER_PRIO_NORMAL,
+        .callback = led_timer_cb,
         .user_data = NULL,
     };
     sw_timer_init(&s_led_timer, &timer_cfg);

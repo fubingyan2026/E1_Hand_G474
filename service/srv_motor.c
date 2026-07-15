@@ -47,7 +47,7 @@
 
 /* Private constants ---------------------------------------------------------*/
 
-/** @brief 每组最大电机数（广播帧 8 槽位） */
+/** @brief 每组最大电机数（广播帧 5 槽位） */
 #define MOTOR_PER_GROUP 5U
 
 /**
@@ -124,33 +124,44 @@ typedef struct {
 /* 模块全局变量 --------------------------------------------------------------*/
 
 /** @brief 两组电机实例 */
-static srv_motor_group_t s_grp_a;  /**< 组A — USART1 (DRV_UART_CH_1) */
-static srv_motor_group_t s_grp_b;  /**< 组B — USART2 (DRV_UART_CH_2) */
+static srv_motor_group_t s_grp_a; /**< 组A — USART1 (DRV_UART_CH_1) */
+static srv_motor_group_t s_grp_b; /**< 组B — USART2 (DRV_UART_CH_2) */
 
 /** @brief 根据 uart_ch 获取组指针（自动匹配各实例的 uart_ch 配置） */
 static srv_motor_group_t* s_grp_from_ch(drv_uart_channel_t ch)
 {
-    if (s_grp_a.uart_ch == ch) return &s_grp_a;
-    if (s_grp_b.uart_ch == ch) return &s_grp_b;
+    if (s_grp_a.uart_ch == ch)
+        return &s_grp_a;
+    if (s_grp_b.uart_ch == ch)
+        return &s_grp_b;
     return NULL;
 }
 
 /** @brief 由组指针反查编号（0=A, 1=B，用于日志） */
 static uint32_t s_grp_idx(const srv_motor_group_t* g)
 {
-    if (g == &s_grp_b) return 1U;
+    if (g == &s_grp_b)
+        return 1U;
     return 0U;
 }
-
 
 /** @brief 电机句柄静态存储 + 扁平索引表 */
 static srv_motor_handle_t s_handle[SRV_MOTOR_TOTAL];
 
 /** @brief 初始化配置表（每组电机绑定到对应组的串口通道） */
-static const struct { uint8_t dev_id; drv_uart_channel_t uart; } s_cfg[SRV_MOTOR_TOTAL] = {
-    {1,SRV_MOTOR_GRPA_UART},{2,SRV_MOTOR_GRPA_UART},{3,SRV_MOTOR_GRPA_UART},{4,SRV_MOTOR_GRPA_UART},{5,SRV_MOTOR_GRPA_UART},
-    {1,SRV_MOTOR_GRPB_UART}, {2,SRV_MOTOR_GRPB_UART}, {3,SRV_MOTOR_GRPB_UART},//
-     {4,SRV_MOTOR_GRPB_UART},
+static const struct {
+    uint8_t dev_id;
+    drv_uart_channel_t uart;
+} s_cfg[SRV_MOTOR_TOTAL] = {
+    { 1, SRV_MOTOR_GRPA_UART },
+    { 2, SRV_MOTOR_GRPA_UART },
+    { 3, SRV_MOTOR_GRPA_UART },
+    { 4, SRV_MOTOR_GRPA_UART },
+    { 5, SRV_MOTOR_GRPA_UART },
+    { 1, SRV_MOTOR_GRPB_UART },
+    { 2, SRV_MOTOR_GRPB_UART },
+    { 3, SRV_MOTOR_GRPB_UART }, 
+    { 4, SRV_MOTOR_GRPB_UART },
 };
 
 /** @brief 模块初始化标志 */
@@ -203,13 +214,13 @@ srv_motor_error_t srv_motor_init(void)
     memset(s_handlers, 0, sizeof(s_handlers));
     memset(s_transitions, 0, sizeof(s_transitions));
 
-    s_handlers[MOTOR_ST_STARTUP]   = fsm_startup;
-    s_handlers[MOTOR_ST_BCAST_EN]  = fsm_bcast_en;
+    s_handlers[MOTOR_ST_STARTUP] = fsm_startup;
+    s_handlers[MOTOR_ST_BCAST_EN] = fsm_bcast_en;
     s_handlers[MOTOR_ST_BCAST_POS] = fsm_bcast_pos;
-    s_handlers[MOTOR_ST_POLL]      = fsm_poll;
+    s_handlers[MOTOR_ST_POLL] = fsm_poll;
     s_handlers[MOTOR_ST_BCAST_CUR] = fsm_bcast_cur;
     s_handlers[MOTOR_ST_BCAST_LIM] = fsm_bcast_lim;
-    s_handlers[MOTOR_ST_IDLE]      = fsm_idle;
+    s_handlers[MOTOR_ST_IDLE] = fsm_idle;
 
     fsm_config_t fsm_cfg = {
         .handlers = s_handlers,
@@ -244,9 +255,9 @@ srv_motor_error_t srv_motor_init(void)
     /* 初始参考值：pos 广播目标，spd/cur 用作 SPD_LIMIT / MAX_CUR 配置值 */
     for (uint32_t i = 0; i < MOTOR_PER_GROUP; i++) {
         if (s_grp_a.motors[i]) {
-            s_grp_a.motors[i]->pos_ref = 0;          /* 停原点 */
-            s_grp_a.motors[i]->spd_ref = 6000;       /* SPD_LIMIT ~15% */
-            s_grp_a.motors[i]->cur_ref = 1000;       /* MAX_CUR  ~1.37A */
+            s_grp_a.motors[i]->pos_ref = 0; /* 停原点 */
+            s_grp_a.motors[i]->spd_ref = 6000; /* SPD_LIMIT ~15% */
+            s_grp_a.motors[i]->cur_ref = 1000; /* MAX_CUR  ~1.37A */
         }
         if (s_grp_b.motors[i]) {
             s_grp_b.motors[i]->pos_ref = 0;
@@ -337,8 +348,10 @@ void srv_motor_enable(srv_motor_handle_t* inst, bool en)
 
 void srv_motor_set_current(srv_motor_handle_t* inst, int16_t cur_ref)
 {
-    if (!inst || !inst->initialized) return;
-    if (inst->cur_ref == cur_ref) return;  /* 未变化，跳过 */
+    if (!inst || !inst->initialized)
+        return;
+    if (inst->cur_ref == cur_ref)
+        return; /* 未变化，跳过 */
     inst->cur_ref = cur_ref;
     inst->cur_pending = true;
     MOTOR_LOG_D("cur limit dev=%u cur=%d", inst->dev_id, cur_ref);
@@ -347,6 +360,24 @@ void srv_motor_set_current(srv_motor_handle_t* inst, int16_t cur_ref)
 srv_motor_handle_t* srv_motor_get_handle(uint32_t index)
 {
     return (index < SRV_MOTOR_TOTAL) ? &s_handle[index] : NULL;
+}
+
+/** @brief 电机名表 — daemon 注册名单一来源（与 s_cfg 索引一一对应） */
+static const char* const s_motor_names[SRV_MOTOR_TOTAL] = {
+    "motorA1",
+    "motorA2",
+    "motorA3",
+    "motorA4",
+    "motorA5",
+    "motorB1",
+    "motorB2",
+    "motorB3",
+    "motorB4",
+};
+
+const char* srv_motor_get_name(uint32_t index)
+{
+    return (index < SRV_MOTOR_TOTAL) ? s_motor_names[index] : NULL;
 }
 
 /* --- 模式切换 --- */
@@ -374,7 +405,8 @@ void srv_motor_zero_reset(srv_motor_handle_t* inst)
     srv_motor_group_t* g = s_grp_from_ch(inst->uart_ch);
 
     /* 等待 DMA 空闲再发（通常等 <1ms，零点是低频操作不阻塞业务） */
-    while (drv_uart_is_tx_busy(g->uart_ch)) { /* spin */ }
+    while (drv_uart_is_tx_busy(g->uart_ch)) { /* spin */
+    }
 
     uint8_t data[8] = { inst->dev_id, SRV_MOTOR_INDEX_UPDATE_FIN };
     uint8_t frame[SRV_MOTOR_FRAME_SIZE];
@@ -387,11 +419,13 @@ void srv_motor_zero_reset(srv_motor_handle_t* inst)
 void srv_motor_zero_reset_all(drv_uart_channel_t ch)
 {
     srv_motor_group_t* g = s_grp_from_ch(ch);
-    if (!g) return;
+    if (!g)
+        return;
 
     for (uint32_t i = 0; i < MOTOR_PER_GROUP; i++) {
         if (g->motors[i]) {
-            while (drv_uart_is_tx_busy(ch)) { /* spin */ }
+            while (drv_uart_is_tx_busy(ch)) { /* spin */
+            }
             uint8_t data[8] = { g->motors[i]->dev_id, SRV_MOTOR_INDEX_UPDATE_FIN };
             uint8_t frame[SRV_MOTOR_FRAME_SIZE];
             build_std_frame(frame, SRV_MOTOR_CAN_ID_CONFIG, data);
@@ -432,16 +466,15 @@ void srv_motor_step(void)
         }
     }
 
-    // /* ── 组B ── */
-    // motor_drain_rx(&s_grp_b, s_grp_b.uart_ch);
-    // if (s_grp_b.count) {
-    //     uint32_t now = micros();
-    //     if (now - s_grp_b.frame_tick >= (MOTOR_POST_DLY_US + MOTOR_ONE_FRAME_TIME_US)) {
-    //         fsm_step(&s_grp_b.fsm);
-    //         s_grp_b.frame_tick = micros();
-    //     }
-    // }
-
+    /* ── 组B ── */
+    motor_drain_rx(&s_grp_b, s_grp_b.uart_ch);
+    if (s_grp_b.count) {
+        uint32_t now = micros();
+        if (now - s_grp_b.frame_tick >= (MOTOR_POST_DLY_US + MOTOR_ONE_FRAME_TIME_US)) {
+            fsm_step(&s_grp_b.fsm);
+            s_grp_b.frame_tick = micros();
+        }
+    }
 }
 
 /* ====================================================================
@@ -475,7 +508,7 @@ static fsm_state_t fsm_startup(fsm_t* ctx)
                 break;
             }
 
-            uint8_t data[8] = { 0,0, 0,0, 0,0, SRV_MOTOR_CMD_ENABLE, 0 };
+            uint8_t data[8] = { 0, 0, 0, 0, 0, 0, SRV_MOTOR_CMD_ENABLE, 0 };
             uint8_t f[20];
             build_std_frame(f, g->motors[g->startup_motor]->dev_id, data);
             drv_uart_send(g->uart_ch, f, 20);
@@ -622,13 +655,16 @@ static fsm_state_t fsm_idle(fsm_t* ctx)
 static fsm_state_t fsm_bcast_cur(fsm_t* ctx)
 {
     srv_motor_group_t* g = motor_grp_from_fsm(ctx);
-    if (!g->count) return MOTOR_ST_IDLE;
+    if (!g->count)
+        return MOTOR_ST_IDLE;
 
     uint8_t slot = 0;
     for (uint8_t n = 0; slot < MOTOR_PER_GROUP && n <= g->cur_cursor; slot++)
-        if (g->motors[slot]) n++;
+        if (g->motors[slot])
+            n++;
     slot--;
-    if (slot >= MOTOR_PER_GROUP || !g->motors[slot]) return MOTOR_ST_IDLE;
+    if (slot >= MOTOR_PER_GROUP || !g->motors[slot])
+        return MOTOR_ST_IDLE;
     srv_motor_handle_t* m = g->motors[slot];
 
     if (!drv_uart_is_tx_busy(g->uart_ch)) {
@@ -652,9 +688,11 @@ static fsm_state_t fsm_bcast_lim(fsm_t* ctx)
 
     uint8_t slot = 0;
     for (uint8_t n = 0; slot < MOTOR_PER_GROUP && n <= g->cur_cursor; slot++)
-        if (g->motors[slot]) n++;
+        if (g->motors[slot])
+            n++;
     slot--;
-    if (slot >= MOTOR_PER_GROUP || !g->motors[slot]) return MOTOR_ST_IDLE;
+    if (slot >= MOTOR_PER_GROUP || !g->motors[slot])
+        return MOTOR_ST_IDLE;
     srv_motor_handle_t* m = g->motors[slot];
 
     if (!drv_uart_is_tx_busy(g->uart_ch)) {
@@ -759,14 +797,17 @@ static void build_poll_frame(uint8_t buf[SRV_MOTOR_FRAME_SIZE],
  */
 static void motor_poll_one(srv_motor_group_t* g, drv_uart_channel_t ch)
 {
-    if (!g->count) return;
+    if (!g->count)
+        return;
 
     /* 找到第 poll_cursor 个已注册电机（0-based compact → 实际 slot） */
     uint8_t slot = 0;
     for (uint8_t n = 0; slot < MOTOR_PER_GROUP && n <= g->poll_cursor; slot++)
-        if (g->motors[slot]) n++;
+        if (g->motors[slot])
+            n++;
     slot--; /* 回退到最后匹配的 slot */
-    if (slot >= MOTOR_PER_GROUP || !g->motors[slot]) return;
+    if (slot >= MOTOR_PER_GROUP || !g->motors[slot])
+        return;
 
     srv_motor_handle_t* tgt = g->motors[slot];
 
