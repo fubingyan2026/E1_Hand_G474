@@ -48,17 +48,17 @@
 /* Private constants ---------------------------------------------------------*/
 
 /** @brief 每组最大电机数（广播帧 5 槽位） */
-#define MOTOR_PER_GROUP 5U
+#define MOTOR_PER_GROUP 6U
 
 /**
  * @brief 各组串口通道配置（可通过编译宏覆盖）
  * 例: cmake -DSRV_MOTOR_GRPA_UART=DRV_UART_CH_2 -DSRV_MOTOR_GRPB_UART=DRV_UART_CH_1 ...
  */
-#define SRV_MOTOR_GRPA_UART DRV_UART_CH_1
-#define SRV_MOTOR_GRPB_UART DRV_UART_CH_2
+#define SRV_MOTOR_GRPA_UART DRV_UART_CH_2
+#define SRV_MOTOR_GRPB_UART DRV_UART_CH_3
 
 /** @brief 每 N 次 INFO_02_R 后插入一次 INFO_01_R ，必须大于1 ！*/
-const uint16_t POLL_01_INTERVAL = 4U;
+const uint16_t POLL_01_INTERVAL = 3U;
 
 const uint16_t MOTOR_ONE_FRAME_TIME_US = 400U;
 
@@ -67,13 +67,13 @@ const uint16_t MOTOR_ONE_FRAME_TIME_US = 400U;
  * 默认 0 = DMA 完成后立即发下帧
  * 例: -DMOTOR_POST_DLY_US=500 → 每帧后等 500µs
  */
-const uint16_t MOTOR_POST_DLY_US = 400U;
+const uint16_t MOTOR_POST_DLY_US = 600U;
 
 const float MAX_FREQUENTLY = 1000.0f / ((MOTOR_ONE_FRAME_TIME_US + MOTOR_POST_DLY_US) * 0.001f * 4);
 
 /** @brief 广播控制周期 (ms)，可通过编译宏覆盖
  *  默认 3ms → ~333 Hz。例: -DMOTOR_BCAST_PERIOD_MS=5 → 200 Hz */
-const uint16_t MOTOR_BCAST_PERIOD_MS = (1000 / MAX_FREQUENTLY + 1) * 1;
+const uint16_t MOTOR_BCAST_PERIOD_MS = (1000 / MAX_FREQUENTLY + 1) * 2;
 
 /**
  * @brief 分时发送 FSM 状态
@@ -249,8 +249,13 @@ srv_motor_error_t srv_motor_init(void)
     drv_uart_register_rx_callback(s_grp_b.uart_ch, motor_rx_cb);
 
     /* 根据配置表注册全部电机 */
-    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++)
-        srv_motor_register(&s_handle[i], s_cfg[i].dev_id, s_cfg[i].uart);
+    for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
+        srv_motor_error_t reg_err = srv_motor_register(&s_handle[i], s_cfg[i].dev_id, s_cfg[i].uart);
+        if (reg_err != SRV_MOTOR_OK) {
+            MOTOR_LOG_E("reg motor[%lu] dev=%u ch=%u FAILED: %d",
+                (unsigned long)i, s_cfg[i].dev_id, (unsigned)s_cfg[i].uart, (int)reg_err);
+        }
+    }
 
     /* 初始参考值：pos 广播目标，spd/cur 用作 SPD_LIMIT / MAX_CUR 配置值 */
     for (uint32_t i = 0; i < MOTOR_PER_GROUP; i++) {
@@ -299,10 +304,13 @@ srv_motor_error_t srv_motor_register(srv_motor_handle_t* inst,
 {
     if (!inst || !s_initialized)
         return SRV_MOTOR_ERROR_NULL_PTR;
-    if (dev_id < 1 || dev_id > MOTOR_PER_GROUP || uart_idx >= 2)
+    if (dev_id < 1 || dev_id > MOTOR_PER_GROUP || uart_idx >= DRV_UART_CH_NUM)
         return SRV_MOTOR_ERROR_INVALID_PARAM;
 
+    /* 通道必须属于某个已配置的电机组（GRPA/GRPB_UART 宏） */
     srv_motor_group_t* g = s_grp_from_ch((drv_uart_channel_t)uart_idx);
+    if (!g)
+        return SRV_MOTOR_ERROR_INVALID_PARAM;
     if (g->motors[dev_id - 1])
         return SRV_MOTOR_ERROR_ALREADY_EXIST;
 
@@ -456,7 +464,6 @@ void srv_motor_step(void)
         return;
 
     /* ── 组A ── */
-    drv_uart_rx_restart(s_grp_a.uart_ch);
     motor_drain_rx(&s_grp_a, s_grp_a.uart_ch);
     if (s_grp_a.count) {
         uint32_t now = micros();

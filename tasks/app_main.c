@@ -18,6 +18,7 @@
 #include "drv_systick.h"
 #include "drv_uart.h"
 #include "led_task.h"
+#include "log.h"
 #include "log_task.h"
 #include "srv_motor.h"
 #include "sw_timer.h"
@@ -49,6 +50,7 @@ int app_main(void)
     for (;;) {
         drv_uart_rx_restart(DRV_UART_CH_1);
         drv_uart_rx_restart(DRV_UART_CH_2);
+        drv_uart_rx_restart(DRV_UART_CH_3);
         sw_timer_tick(millis());
         sw_timer_task();
         srv_motor_step();

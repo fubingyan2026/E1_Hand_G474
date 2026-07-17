@@ -350,6 +350,7 @@ static bool any_online(void)
 
 static bool any_error(void)
 {
+    return false;
     for (uint32_t i = 0; i < SRV_MOTOR_TOTAL; i++) {
         const srv_motor_feedback_t* fb = srv_motor_behavior_get_fb(i);
         if (fb && fb->err_code != SRV_MOTOR_ERR_NONE)

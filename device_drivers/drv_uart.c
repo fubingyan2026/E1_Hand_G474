@@ -45,10 +45,10 @@
 /* Private constants ---------------------------------------------------------*/
 
 /** @brief RX DMA 单缓冲字节数（IDLE 事件分帧，需容纳两次空闲间隙之间的最大突发） */
-#define DRV_UART_RX_BUF_SIZE (64U)
+#define DRV_UART_RX_BUF_SIZE (20U)
 
 /** @brief TX 最大单次发送量 */
-#define DRV_UART_TX_BUF_SIZE (256U)
+#define DRV_UART_TX_BUF_SIZE (20U)
 
 /** @brief 错误日志聚合窗口 (ms)：窗口内的错误只在首次打印，附累计次数 */
 #define DRV_UART_ERR_LOG_PERIOD_MS (1000U)
@@ -118,6 +118,8 @@ static bool drv_uart_rx_start(drv_uart_inst_t* inst)
 
 drv_uart_error_t drv_uart_init(void)
 {
+    drv_uart_error_t err = DRV_UART_OK;
+
     for (uint32_t ch = 0; ch < DRV_UART_CH_NUM; ch++) {
         drv_uart_inst_t* inst = &s_inst[ch];
 
@@ -128,13 +130,19 @@ drv_uart_error_t drv_uart_init(void)
 
         /* 清残留 ORE/RDR 后启动 DMA normal 模式接收（缓冲 0） */
         if (!drv_uart_rx_start(inst)) {
-            return DRV_UART_ERROR_UNINITIALIZED;
+            /* 注意：此时 log_task 尚未初始化，日志可能丢失，
+             * 但 initialized=false 会让该通道后续 send/restart 全部拒绝。
+             * 跳过该通道，不影响其余通道初始化。 */
+            UART_LOG_E("ch%u rx start failed at init (HAL state=%d)",
+                (unsigned)ch + 1U, (int)inst->huart->RxState);
+            err = DRV_UART_ERROR_UNINITIALIZED;
+            continue;
         }
 
         inst->initialized = true;
     }
 
-    return DRV_UART_OK;
+    return err;
 }
 
 void drv_uart_deinit_all(void)
