@@ -18,8 +18,9 @@
 #include "log.h"
 
 #include <stdarg.h>
-#include <stdio.h>
 #include <string.h>
+
+#include "printf.h"
 
 /* Private constants ---------------------------------------------------------*/
 
@@ -269,32 +270,32 @@ log_error_t log_hexdump(const char* tag, const uint8_t* data, uint32_t len)
     for (uint32_t i = 0; i < len; i += 16) {
         offset = 0;
 
-        offset += snprintf(buf + offset, buf_size - offset, "%04lX: ", (unsigned long)i);
+        offset += snprintf_(buf + offset, buf_size - offset, "%04lX: ", (unsigned long)i);
 
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < len) {
-                offset += snprintf(buf + offset, buf_size - offset, "%02X ", data[i + j]);
+                offset += snprintf_(buf + offset, buf_size - offset, "%02X ", data[i + j]);
             } else {
-                offset += snprintf(buf + offset, buf_size - offset, "   ");
+                offset += snprintf_(buf + offset, buf_size - offset, "   ");
             }
 
             if (j == 7) {
-                offset += snprintf(buf + offset, buf_size - offset, " ");
+                offset += snprintf_(buf + offset, buf_size - offset, " ");
             }
         }
 
-        offset += snprintf(buf + offset, buf_size - offset, " |");
+        offset += snprintf_(buf + offset, buf_size - offset, " |");
 
         for (uint32_t j = 0; j < 16 && i + j < len; j++) {
             char c = (char)data[i + j];
             if (c >= 0x20 && c <= 0x7E) {
-                offset += snprintf(buf + offset, buf_size - offset, "%c", c);
+                offset += snprintf_(buf + offset, buf_size - offset, "%c", c);
             } else {
-                offset += snprintf(buf + offset, buf_size - offset, ".");
+                offset += snprintf_(buf + offset, buf_size - offset, ".");
             }
         }
 
-        offset += snprintf(buf + offset, buf_size - offset, "|\r\n");
+        offset += snprintf_(buf + offset, buf_size - offset, "|\r\n");
 
         kfifo_put(&s_tx_fifo, (const uint8_t*)buf, offset);
     }
@@ -398,10 +399,10 @@ static log_error_t log_format_output(log_level_t level, const char* tag,
     }
 
     if (s_config.enable_color) {
-        offset += snprintf(buf + offset, buf_size - offset, "%s", level_color);
+        offset += snprintf_(buf + offset, buf_size - offset, "%s", level_color);
     }
 
-    offset += snprintf(buf + offset, buf_size - offset, "%s (", level_char);
+    offset += snprintf_(buf + offset, buf_size - offset, "%s (", level_char);
 
     if (s_config.enable_timestamp) {
         static uint32_t timestamp = 0;
@@ -410,13 +411,13 @@ static log_error_t log_format_output(log_level_t level, const char* tag,
         } else {
             timestamp++;
         }
-        offset += snprintf(buf + offset, buf_size - offset, "%lu",
+        offset += snprintf_(buf + offset, buf_size - offset, "%lu",
             (unsigned long)timestamp);
     }
 
-    offset += snprintf(buf + offset, buf_size - offset, ") %s: ", tag);
+    offset += snprintf_(buf + offset, buf_size - offset, ") %s: ", tag);
 
-    int msg_len = vsnprintf(buf + offset, buf_size - offset, fmt, args);
+    int msg_len = vsnprintf_(buf + offset, buf_size - offset, fmt, args);
     if (msg_len < 0) {
         return LOG_ERROR_INVALID_PARAM;
     }
@@ -427,10 +428,10 @@ static log_error_t log_format_output(log_level_t level, const char* tag,
     }
 
     if (s_config.enable_color) {
-        offset += snprintf(buf + offset, buf_size - offset, "%s", LOG_COLOR_RESET);
+        offset += snprintf_(buf + offset, buf_size - offset, "%s", LOG_COLOR_RESET);
     }
 
-    offset += snprintf(buf + offset, buf_size - offset, "\r\n");
+    offset += snprintf_(buf + offset, buf_size - offset, "\r\n");
 
     kfifo_put(&s_tx_fifo, (const uint8_t*)buf, offset);
 

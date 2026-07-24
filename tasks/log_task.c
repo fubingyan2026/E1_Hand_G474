@@ -30,11 +30,16 @@
 
 static uint8_t s_tx_buf[LOG_TASK_TX_BUF_SIZE];
 static sw_timer_t s_log_timer;
-static log_task_output_t s_output_mode = LOG_OUTPUT_RTT;
+static log_task_output_t s_output_mode = LOG_OUTPUT_UART;
 
 /* Private function prototypes -----------------------------------------------*/
 
 static void log_timer_cb(void* user_data);
+
+static void log_rx_cb(drv_uart_channel_t ch, const uint8_t* data, uint32_t len)
+{
+    log_hexdump("UART0", data, len);
+}
 
 /* Exported functions --------------------------------------------------------*/
 
@@ -46,6 +51,8 @@ void log_task_init(void)
     };
     log_init(&log_cfg);
     log_set_level(LOG_LEVEL_DEBUG);
+
+    drv_uart_register_rx_callback(DRV_UART_CH_1, log_rx_cb);
 
     /* 注：drv_uart_init() 由 app_main 统一调用，此处不再单独调用 */
 
@@ -100,13 +107,4 @@ static void log_timer_cb(void* user_data)
             }
         }
     }
-
-    /* ── RX ── */
-    // {
-    //     uint8_t rx_buf[128];
-    //     uint32_t rx_len = drv_uart_rx_read(DRV_UART_CH_1, rx_buf, sizeof(rx_buf));
-    //     if (rx_len > 0) {
-    //         log_hexdump("UART0", rx_buf, rx_len);
-    //     }
-    // }
 }

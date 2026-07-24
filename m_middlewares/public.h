@@ -31,6 +31,9 @@ extern "C" {
 #include "framework/msg_fifo.h"
 #include "framework/sw_timer.h"
 
+/* ===== Third_Party ===== */
+#include "Third_Party/mpaland_printf/printf.h"
+
 /* ===== Utils ===== */
 #include "utils/clist.h"
 #include "utils/kfifo.h"

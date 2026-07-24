@@ -60,9 +60,11 @@ aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/algorithm/math MID_math)
 
 # Third_Party 模块
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/SEGGER_RTT/RTT MID_SEGGER_RTT)
-aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/easyflash/src MID_easyflash)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/CmBacktrace/cm_backtrace MID_CMBT)
 aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/lwmem/src/lwmem MID_lwmem)
+aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/ring_storage MID_RING_STORAGE)
+aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/hal_flash MID_hal_flash)
+aux_source_directory(${CMAKE_SOURCE_DIR}/m_middlewares/Third_Party/mpaland_printf MID_printf)
 
 aux_source_directory(${CMAKE_SOURCE_DIR}/service SERVICE)
 
@@ -85,14 +87,15 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${MID_math}
 
     ${MID_SEGGER_RTT}
-    ${MID_easyflash}
     ${MID_CMBT}
     ${MID_lwmem}
+    ${MID_printf}
+    ${MID_RING_STORAGE}
+    ${MID_hal_flash}
 
     # 汇编文件需要单独添加
     m_middlewares/Third_Party/CmBacktrace/cm_backtrace/fault_handler/gcc/cmb_fault.S
-    # 单独的源文件
-    m_middlewares/Third_Party/easyflash/port/ef_port.c
+
 )
 
 # Add include paths
@@ -116,13 +119,18 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     m_middlewares/Third_Party/SEGGER_RTT/RTT/config
     m_middlewares/Third_Party/SEGGER_RTT/RTT
     m_middlewares/Third_Party/lwmem/include
-    m_middlewares/Third_Party/easyflash/inc
-
+    m_middlewares/Third_Party/mpaland_printf
+    m_middlewares/Third_Party/ring_storage
+    m_middlewares/Third_Party/hal_flash
 )
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+    HAL_FLASH_CHIP_STM32G4
+    # mpaland_printf: STM32G474 FPv4-SP 无硬件双精度，禁用浮点输出
+    PRINTF_DISABLE_SUPPORT_FLOAT
+    PRINTF_DISABLE_SUPPORT_EXPONENTIAL
 )
 
 # Remove wrong libob.a library dependency when using cpp files
